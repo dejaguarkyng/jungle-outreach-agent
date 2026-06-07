@@ -29,6 +29,8 @@ services:
       FIT_SCORE_THRESHOLD: ${FIT_SCORE_THRESHOLD:-70}
       MAX_DRAFTS_PER_DOMAIN: ${MAX_DRAFTS_PER_DOMAIN:-2}
     command:
+      - python
+      - /app/outreach_worker.py
       - --job
       - full-run-qwen
       - --target

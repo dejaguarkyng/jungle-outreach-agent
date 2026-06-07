@@ -38,5 +38,4 @@ RUN mkdir -p /workspace/artifacts
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
   CMD ["python", "/app/outreach_worker.py", "--health-check"]
 
-ENTRYPOINT ["python", "/app/outreach_worker.py"]
-CMD ["--job", "full-run-qwen", "--target", "17", "--output", "/workspace/artifacts"]
+CMD ["sleep", "infinity"]

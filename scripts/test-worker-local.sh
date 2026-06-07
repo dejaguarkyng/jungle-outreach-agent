@@ -11,7 +11,9 @@ docker run --rm \
   -e FIT_SCORE_THRESHOLD=60 \
   -e MAX_DRAFTS_PER_DOMAIN=2 \
   -v "$OUTPUT:/workspace/artifacts" \
+  --entrypoint python \
   "$IMAGE" \
+  /app/outreach_worker.py \
   --job "$JOB" \
   --target 2 \
   --output /workspace/artifacts \
