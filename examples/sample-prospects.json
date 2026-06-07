@@ -1,0 +1,9 @@
+[
+  {
+    "name": "Avery Maintainer",
+    "project": "sample/agent-runtime",
+    "email": "hello@agent-runtime.dev",
+    "email_source_url": "https://agent-runtime.dev/contact",
+    "category": "agent_compute"
+  }
+]

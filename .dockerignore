@@ -1,0 +1,14 @@
+.git
+.github
+.next
+.env
+.venv
+node_modules
+data
+artifacts
+exports
+coverage
+__pycache__
+*.pyc
+*.sqlite*
+*.tsbuildinfo

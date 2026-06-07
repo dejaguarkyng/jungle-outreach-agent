@@ -1,0 +1,54 @@
+[
+  {
+    "prospect_id": "sample-agent-runtime",
+    "name": "Avery Maintainer",
+    "email": "hello@agent-runtime.dev",
+    "email_source_url": "https://agent-runtime.dev/contact",
+    "project": "sample/agent-runtime",
+    "category": "agent_compute",
+    "fit_score": 100,
+    "subject": "Jungle Grid and agent-runtime",
+    "body": "Hi Avery,\n\nI read the public documentation for agent-runtime and noticed Agent Runtime dispatches long-running tool jobs to isolated workers and preserves logs, retries, and. I\u2019m building Jungle Grid, an execution layer for agent-triggered inference, batch jobs, logs, retries, and artifacts.\n\nThe workload you describe seems relevant because teams need reliable compute beyond lightweight tool calls. I thought this might be useful as you develop the project: https://junglegrid.dev\n\nBenedict",
+    "word_count": 69,
+    "links": [
+      "https://junglegrid.dev"
+    ],
+    "evidence_urls": [
+      "https://agent-runtime.dev/contact",
+      "https://github.com/sample/agent-runtime",
+      "https://github.com/sample/agent-runtime#readme"
+    ],
+    "personalization_claims": [
+      "Agent Runtime dispatches long-running tool jobs to isolated workers and preserves logs, retries, and"
+    ],
+    "model_mode": "template",
+    "validation_status": "passed",
+    "validation_errors": []
+  },
+  {
+    "prospect_id": "sample-mcp-worker",
+    "name": "Morgan Builder",
+    "email": "team@mcp-worker.dev",
+    "email_source_url": "https://mcp-worker.dev/about",
+    "project": "sample/mcp-worker",
+    "category": "mcp",
+    "fit_score": 93,
+    "subject": "Jungle Grid and mcp-worker",
+    "body": "Hi Morgan,\n\nI read the public documentation for mcp-worker and noticed MCP Worker lets agent clients launch observable batch inference tasks and retrieve generated files. I\u2019m building Jungle Grid, an execution layer for agent-triggered inference, batch jobs, logs, retries, and artifacts.\n\nThe workload you describe seems relevant because teams need reliable compute beyond lightweight tool calls. I thought this might be useful as you develop the project: https://junglegrid.dev\n\nBenedict",
+    "word_count": 69,
+    "links": [
+      "https://junglegrid.dev"
+    ],
+    "evidence_urls": [
+      "https://mcp-worker.dev/about",
+      "https://github.com/sample/mcp-worker",
+      "https://github.com/sample/mcp-worker#readme"
+    ],
+    "personalization_claims": [
+      "MCP Worker lets agent clients launch observable batch inference tasks and retrieve generated files"
+    ],
+    "model_mode": "template",
+    "validation_status": "passed",
+    "validation_errors": []
+  }
+]

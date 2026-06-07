@@ -1,0 +1,50 @@
+thresholds:
+  fit_score_min: 7
+  final_score_min: 6.5
+  top_n: 25
+  similarity_threshold: 0.82
+
+weights:
+  pain_score: 0.4
+  urgency_score: 0.3
+  budget_signal: 0.2
+  production_usage: 0.1
+
+recency_rules:
+  - max_age_hours: 24
+    boost: 2
+  - max_age_hours: 72
+    boost: 1
+  - max_age_hours: 336
+    boost: 0
+
+penalties:
+  low_fit_terms:
+    - "cuda"
+    - "cudnn"
+    - "pytorch bug"
+    - "tensorflow bug"
+    - "library issue"
+    - "dependency conflict"
+    - "local bug"
+    - "stack trace"
+    - "segmentation fault"
+    - "framework bug"
+
+high_signal_keywords:
+  provider_pain:
+    - "runpod"
+    - "vast"
+    - "quota"
+    - "preempted"
+    - "unreliable"
+  deployment_pain:
+    - "inference"
+    - "vllm"
+    - "triton"
+    - "deployment"
+  gpu_selection_pain:
+    - "which gpu"
+    - "a100"
+    - "h100"
+    - "vram"

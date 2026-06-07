@@ -1,0 +1,24 @@
+name: Integration request
+description: Propose a public source, runtime, or developer integration.
+title: "[Integration]: "
+labels: ["integration"]
+body:
+  - type: input
+    id: integration
+    attributes:
+      label: Integration
+    validations:
+      required: true
+  - type: textarea
+    id: public_data
+    attributes:
+      label: Public data and permissions
+      description: Describe the source, terms, provenance, and credentials.
+    validations:
+      required: true
+  - type: textarea
+    id: design
+    attributes:
+      label: Proposed design
+    validations:
+      required: true

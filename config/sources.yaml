@@ -1,0 +1,37 @@
+max_age_days: 14
+
+adapters:
+  reddit:
+    enabled: true
+    limit_per_query: 15
+    user_agent: "jungle-grid-leads/0.2"
+  hackernews:
+    enabled: true
+    limit_per_query: 15
+  github:
+    enabled: true
+    limit_per_query: 10
+  x:
+    enabled: false
+    limit_per_query: 10
+  discord:
+    enabled: false
+    limit_per_query: 10
+
+queries:
+  provider_pain:
+    - "RunPod unreliable GPU"
+    - "Vast.ai GPU issue"
+    - "GPU provider quota"
+    - "cannot get GPU instances"
+    - "GPU cloud instability"
+  gpu_selection_pain:
+    - "which GPU for inference"
+    - "A100 vs H100 vs L40S"
+    - "GPU VRAM confusion"
+    - "choosing GPU for serving"
+  deployment_pain:
+    - "LLM deployment pain"
+    - "inference latency problem"
+    - "vLLM deployment issue"
+    - "GPU serving instability"

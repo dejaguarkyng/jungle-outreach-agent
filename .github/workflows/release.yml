@@ -1,0 +1,50 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Generate example artifacts
+        run: |
+          mkdir -p release-artifacts
+          FIT_SCORE_THRESHOLD=60 python workers/outreach/outreach_worker.py \
+            --job full-run-template \
+            --target 2 \
+            --output release-artifacts \
+            --input examples/sample-worker-input.json
+          tar -czf jungle-outreach-example-artifacts.tar.gz -C release-artifacts .
+      - name: Build release notes
+        run: |
+          {
+            echo "## Summary"
+            echo "Draft-only Jungle Grid outreach agent release."
+            echo
+            echo "## Docker image"
+            echo "\`ghcr.io/jungle-grid/outreach-qwen-worker:${GITHUB_REF_NAME}\`"
+            echo
+            echo "## Install"
+            echo "\`npm install && cp .env.example .env\`"
+            echo
+            echo "## Verification"
+            echo "\`npm run lint && npm run typecheck && npm test && npm run test:python && npm run build\`"
+            echo
+            echo "## Migration and limitations"
+            echo "Review CHANGELOG.md. Jungle Grid and ZeptoMail credentials require manual setup; ZeptoMail sending is disabled until explicitly enabled for a compliant use case."
+          } > release-notes.md
+      - uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-notes.md
+          files: jungle-outreach-example-artifacts.tar.gz
+          generate_release_notes: true

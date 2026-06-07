@@ -1,0 +1,24 @@
+[
+  {
+    "prospect_id": "sample-agent-runtime",
+    "name": "Avery Maintainer",
+    "email": "hello@agent-runtime.dev",
+    "email_source_url": "https://agent-runtime.dev/contact",
+    "email_source_type": "official_website",
+    "project": "sample/agent-runtime",
+    "project_url": "https://github.com/sample/agent-runtime",
+    "project_description": "An open-source runtime for durable agent jobs and tool execution.",
+    "category": "agent_compute"
+  },
+  {
+    "prospect_id": "sample-mcp-worker",
+    "name": "Morgan Builder",
+    "email": "team@mcp-worker.dev",
+    "email_source_url": "https://mcp-worker.dev/about",
+    "email_source_type": "official_website",
+    "project": "sample/mcp-worker",
+    "project_url": "https://github.com/sample/mcp-worker",
+    "project_description": "MCP tools that launch batch inference and data processing jobs.",
+    "category": "mcp"
+  }
+]

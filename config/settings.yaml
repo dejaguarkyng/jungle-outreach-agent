@@ -1,0 +1,158 @@
+discovery:
+  recent_days: 30
+  sources:
+    reddit:
+      enabled: true
+      limit_per_query: 20
+      user_agent: "jungle-grid-leads/0.1"
+    github:
+      enabled: true
+      limit_per_query: 20
+      user_agent: "jungle-grid-leads/0.1"
+      bearer_token_env: "GITHUB_TOKEN"
+    hackernews:
+      enabled: true
+      limit_per_query: 20
+    x:
+      enabled: true
+      optional: true
+      limit_per_query: 15
+      bearer_token_env: "X_API_BEARER_TOKEN"
+  queries:
+    provider_pain:
+      - "gpu cloud quota issue"
+      - "gpu provider pricing painful"
+      - "can't get gpu instances"
+      - "gpu cloud unreliable"
+    gpu_selection_pain:
+      - "which GPU for LLM inference"
+      - "A100 vs H100 vs L40S"
+      - "choosing GPU for fine tuning"
+      - "what GPU do I need for AI deployment"
+    deployment_pain:
+      - "deploying LLM to production pain"
+      - "vllm deployment issues"
+      - "gpu inference latency issue"
+      - "kubernetes gpu inference problems"
+
+dedupe:
+  complaint_similarity_threshold: 0.82
+
+qualification:
+  allowed_reddit_subreddits:
+    - "LocalLLaMA"
+    - "MachineLearning"
+    - "StableDiffusion"
+    - "MLOps"
+    - "kubernetes"
+    - "selfhosted"
+    - "dataengineering"
+    - "artificial"
+    - "deeplearning"
+    - "learnmachinelearning"
+    - "MLEngineering"
+    - "pytorch"
+    - "tensorflow"
+    - "huggingface"
+    - "CloudComputing"
+    - "devops"
+    - "aws"
+    - "googlecloud"
+    - "azure"
+    - "sysadmin"
+    - "GPU"
+    - "programming"
+    - "computervision"
+    - "LanguageTechnology"
+    - "ArtificialIntelligence"
+    - "singularity"
+    - "ChatGPT"
+    - "LLM"
+    - "datascience"
+    - "reinforcementlearning"
+    - "OpenAI"
+    - "StableDiffusion"
+    - "MachineLearningNews"
+    - "AIAssistants"
+    - "RunPod"
+    - "homelab"
+  required_ai_terms:
+    - "gpu"
+    - "cuda"
+    - "inference"
+    - "model training"
+    - "training job"
+    - "fine tuning"
+    - "fine-tuning"
+    - "finetuning"
+    - "deployment"
+    - "deploying"
+    - "llm"
+    - "llms"
+    - "large language model"
+    - "ai infra"
+    - "ai infrastructure"
+    - "ml infra"
+    - "model serving"
+    - "vllm"
+    - "triton"
+  hard_reject_terms:
+    - "relationship"
+    - "dating"
+    - "boyfriend"
+    - "girlfriend"
+    - "marriage"
+    - "divorce"
+    - "personal life"
+    - "parenting"
+    - "parent"
+    - "mother"
+    - "father"
+    - "mom"
+    - "dad"
+    - "baby"
+    - "child"
+    - "children"
+    - "gaming"
+    - "video game"
+    - "fortnite"
+    - "minecraft"
+    - "playstation"
+    - "xbox"
+    - "fps"
+    - "music"
+    - "song"
+    - "album"
+    - "band"
+    - "guitar"
+    - "storytelling"
+    - "novel"
+    - "character arc"
+    - "plot twist"
+
+llm:
+  mode: "heuristic"
+  model: "template"
+  temperature: 0.2
+  timeout_seconds: 45
+
+scoring:
+  outreach_threshold: 7
+  queue_limit: 25
+
+company:
+  company_name: "Jungle Grid"
+  company_pitch: "Jungle Grid helps AI teams find GPU capacity, choose the right hardware, and deploy workloads without the usual GPU infrastructure friction."
+
+safety:
+  manual_only: true
+
+paths:
+  raw_dir: "data/raw"
+  normalized_path: "data/normalized/leads.json"
+  deduped_path: "data/processed/deduped_leads.json"
+  classified_path: "data/enriched/leads_classified.json"
+  scored_path: "data/enriched/leads_scored.json"
+  drafts_path: "data/outreach/outreach_drafts.json"
+  outreach_queue_path: "outreach_queue.json"
+  prompts_dir: "prompts"

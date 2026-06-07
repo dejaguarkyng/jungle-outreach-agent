@@ -1,0 +1,26 @@
+[
+  {
+    "prospect_id": "sample-agent-runtime",
+    "summary": "sample/agent-runtime documents Agent Runtime dispatches long-running tool jobs to isolated workers and preserves logs, retries, and output artifacts for review",
+    "personalization_detail": "Agent Runtime dispatches long-running tool jobs to isolated workers and preserves logs, retries, and output artifacts for review",
+    "junglegrid_relevance": "The documented workload can benefit from durable compute jobs, logs, retries, and retrievable artifacts.",
+    "evidence_urls": [
+      "https://agent-runtime.dev/contact",
+      "https://github.com/sample/agent-runtime",
+      "https://github.com/sample/agent-runtime#readme"
+    ],
+    "evidence_strength": 0.95
+  },
+  {
+    "prospect_id": "sample-mcp-worker",
+    "summary": "sample/mcp-worker documents MCP Worker lets agent clients launch observable batch inference tasks and retrieve generated files when execution completes",
+    "personalization_detail": "MCP Worker lets agent clients launch observable batch inference tasks and retrieve generated files when execution completes",
+    "junglegrid_relevance": "The documented workload can benefit from durable compute jobs, logs, retries, and retrievable artifacts.",
+    "evidence_urls": [
+      "https://mcp-worker.dev/about",
+      "https://github.com/sample/mcp-worker",
+      "https://github.com/sample/mcp-worker#readme"
+    ],
+    "evidence_strength": 0.95
+  }
+]

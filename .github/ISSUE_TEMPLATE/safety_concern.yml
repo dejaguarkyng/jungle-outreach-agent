@@ -1,0 +1,20 @@
+name: Safety concern
+description: Report non-sensitive safety or abuse concerns.
+title: "[Safety]: "
+labels: ["safety"]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include secrets or private contact data. Use SECURITY.md for exploitable vulnerabilities.
+  - type: textarea
+    id: concern
+    attributes:
+      label: Concern
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact and mitigation
+    validations:
+      required: true

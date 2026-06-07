@@ -1,0 +1,47 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    ports:
+      - "3000:3000"
+    volumes:
+      - outreach-data:/app/data
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+
+  worker:
+    profiles: ["worker"]
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
+      LLM_FALLBACK_MODE: template
+      FIT_SCORE_THRESHOLD: ${FIT_SCORE_THRESHOLD:-70}
+      MAX_DRAFTS_PER_DOMAIN: ${MAX_DRAFTS_PER_DOMAIN:-2}
+    command:
+      - --job
+      - full-run-qwen
+      - --target
+      - "2"
+      - --output
+      - /workspace/artifacts
+      - --input
+      - /app/examples/sample-worker-input.json
+    volumes:
+      - ./artifacts:/workspace/artifacts
+    depends_on:
+      - ollama
+
+volumes:
+  outreach-data:
+  ollama-data:

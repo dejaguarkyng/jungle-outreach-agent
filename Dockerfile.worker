@@ -1,0 +1,42 @@
+FROM python:3.11-slim-bookworm
+
+LABEL org.opencontainers.image.source="https://github.com/Jungle-Grid/jungle-outreach-agent" \
+      org.opencontainers.image.description="Jungle Grid-powered outreach research and draft worker" \
+      org.opencontainers.image.licenses="Apache-2.0"
+
+ARG TARGETARCH
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    OLLAMA_HOST=http://127.0.0.1:11434 \
+    OLLAMA_MODEL=qwen2.5:3b
+
+WORKDIR /app
+COPY workers/outreach/requirements.txt /app/requirements.txt
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl zstd \
+    && case "${TARGETARCH:-amd64}" in \
+         amd64) OLLAMA_ARCH=amd64 ;; \
+         arm64) OLLAMA_ARCH=arm64 ;; \
+         *) echo "Unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 \
+      -o /tmp/ollama.tar.zst \
+      "https://ollama.com/download/ollama-linux-${OLLAMA_ARCH}.tar.zst" \
+    && tar --zstd -xf /tmp/ollama.tar.zst -C /usr \
+    && rm /tmp/ollama.tar.zst \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir --timeout 120 --retries 10 -r /app/requirements.txt
+RUN python -m playwright install --with-deps chromium
+
+COPY workers/outreach/outreach_worker.py /app/outreach_worker.py
+COPY examples /app/examples
+RUN mkdir -p /workspace/artifacts
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+  CMD ["python", "/app/outreach_worker.py", "--health-check"]
+
+ENTRYPOINT ["python", "/app/outreach_worker.py"]
+CMD ["--job", "full-run-qwen", "--target", "17", "--output", "/workspace/artifacts"]
