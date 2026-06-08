@@ -5,17 +5,18 @@ const validDraft = {
   subject: "Jungle Grid and Acme agent runtime",
   body: [
     "Hi Jane, I read the public notes for Acme agent runtime and noticed its durable job queue keeps logs, retries, and artifacts together.",
-    "Jungle Grid helps agent teams run real compute jobs when tool calls outgrow lightweight APIs.",
-    "The overlap with your runtime work seemed clear, so I wanted to share the project for operators evaluating batch inference workflows: https://junglegrid.dev",
+    "I’m building Jungle Grid for teams that need to run inference, workers, and long-running AI jobs without stitching together queueing, retries, and artifact handling themselves.",
+    "The overlap with your runtime work seemed clear because that execution layer usually gets painful once agent actions stop being tiny requests and start behaving like real workloads in production.",
+    "If that is a live problem for you, the shortest overview is https://junglegrid.dev.",
     "Benedict",
   ].join(" "),
 };
 
 describe("outreach copy validation", () => {
-  it("accepts a 60-80 word body with exactly the Jungle Grid link", () => {
+  it("accepts a 70-140 word body with the single allowed link", () => {
     const result = validateDraftContent(validDraft.subject, validDraft.body);
-    expect(countWords(validDraft.body)).toBeGreaterThanOrEqual(60);
-    expect(countWords(validDraft.body)).toBeLessThanOrEqual(80);
+    expect(countWords(validDraft.body)).toBeGreaterThanOrEqual(70);
+    expect(countWords(validDraft.body)).toBeLessThanOrEqual(140);
     expect(result.valid).toBe(true);
   });
 
@@ -24,13 +25,13 @@ describe("outreach copy validation", () => {
     expect(
       validateDraftContent(
         validDraft.subject,
-        validDraft.body.replace("https://junglegrid.dev", "https://example.com"),
+        `${validDraft.body} https://example.com`,
       )
         .valid,
     ).toBe(false);
   });
 
-  it("rejects bodies outside 60-80 words", () => {
+  it("rejects bodies outside 70-140 words", () => {
     expect(validateDraftContent("Subject", "Hi there https://junglegrid.dev").valid).toBe(false);
   });
 });

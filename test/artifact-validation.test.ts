@@ -10,9 +10,11 @@ import {
 
 const body = `Hi Avery,
 
-I read the public documentation for agent-runtime and noticed its durable worker queue preserves logs and output artifacts. I’m building Jungle Grid, an execution layer for agent-triggered inference, batch jobs, retries, and artifacts.
+I read the public documentation for agent-runtime and noticed its durable worker queue preserves logs and output artifacts. I’m building Jungle Grid for teams that need to run inference, workers, and long-running AI jobs without stitching together queueing, retries, and artifact handling themselves.
 
-The documented workflow seems relevant because teams need reliable compute beyond lightweight tool calls. I thought this might be useful as you develop agent-runtime: https://junglegrid.dev
+The documented workflow seems relevant because teams need reliable compute beyond lightweight tool calls, especially once agent actions become long-running jobs that need auditable retries, visible progress, and outputs people can inspect later.
+
+If that is a live problem for you, the shortest overview is https://junglegrid.dev.
 
 Benedict`;
 
@@ -20,7 +22,7 @@ function draft(overrides: Partial<ArtifactEmailDraft> = {}): ArtifactEmailDraft 
   return {
     prospect_id: "p1",
     name: "Avery",
-    email: "hello@agent-runtime.dev",
+    email: "avery@agent-runtime.dev",
     email_source_url: "https://agent-runtime.dev/contact",
     project: "sample/agent-runtime",
     category: "agent_compute",
@@ -47,7 +49,7 @@ function bundle(emailDrafts = [draft()]): ArtifactBundle {
       {
         prospect_id: "p1",
         name: "Avery",
-        email: "hello@agent-runtime.dev",
+        email: "avery@agent-runtime.dev",
         email_source_url: "https://agent-runtime.dev/contact",
         email_source_type: "official_website",
         project: "sample/agent-runtime",
@@ -62,6 +64,11 @@ function bundle(emailDrafts = [draft()]): ArtifactBundle {
         summary: "Agent Runtime documents durable worker jobs.",
         personalization_detail: "The durable worker queue preserves logs and output artifacts.",
         junglegrid_relevance: "The workload needs durable compute execution.",
+        evidence_points: [
+          "durable worker queue preserves logs",
+          "output artifacts stay attached to jobs",
+        ],
+        pain_signals: ["durable worker queue preserves logs and output artifacts"],
         evidence_urls: [
           "https://agent-runtime.dev/contact",
           "https://github.com/sample/agent-runtime#readme",
@@ -73,7 +80,7 @@ function bundle(emailDrafts = [draft()]): ArtifactBundle {
       {
         prospect_id: "p1",
         name: "Avery",
-        email: "hello@agent-runtime.dev",
+        email: "avery@agent-runtime.dev",
         email_source_url: "https://agent-runtime.dev/contact",
         email_source_type: "official_website",
         project: "sample/agent-runtime",
@@ -89,6 +96,18 @@ function bundle(emailDrafts = [draft()]): ArtifactBundle {
           jungleGridComprehension: 10,
           contactQuality: 7,
         },
+        evidence_strength: 0.9,
+        contact_quality: 7,
+        evidence_points: [
+          "durable worker queue preserves logs",
+          "output artifacts stay attached to jobs",
+        ],
+        why_this_person: "Reachable maintainer for the runtime.",
+        why_now: "The repo documents active execution pain.",
+        concrete_pain_signal: "durable worker queue preserves logs and output artifacts",
+        suggested_angle: "Durable execution for worker jobs and artifacts.",
+        outreach_priority: "high",
+        excluded: false,
       },
     ],
     email_drafts: emailDrafts,
@@ -137,7 +156,7 @@ describe("worker artifact validation", () => {
     expect(result.valid).toBe(false);
     expect(result.errors.join(" ")).toMatch(/Duplicate email/);
     expect(result.errors.join(" ")).toMatch(/exceeds the cap/);
-    expect(result.errors.join(" ")).toMatch(/only allowed link/);
+    expect(result.errors.join(" ")).toMatch(/Allowed links are|must include/);
   });
 
   it("rejects worker-reported failures", () => {

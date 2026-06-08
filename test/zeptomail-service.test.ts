@@ -15,8 +15,10 @@ import { countWords } from "@/src/safety/email-validation";
 const validSubject = "Jungle Grid and Acme agent runtime";
 const validBody = [
   "Hi Jane, I read the public notes for Acme agent runtime and noticed its durable job queue keeps logs, retries, and artifacts together.",
-  "Jungle Grid helps agent teams run real compute jobs when tool calls outgrow lightweight APIs.",
-  "The overlap with your runtime work seemed clear, so I wanted to share the project for operators evaluating batch inference workflows: https://junglegrid.dev",
+  "Jungle Grid helps agent teams run real compute jobs when tool calls outgrow lightweight APIs and need durable execution, traceable outputs, and clean retries.",
+  "The overlap with your runtime work seemed clear because teams usually feel the friction once agent actions stop being tiny requests and start behaving like real workloads that need observability and artifact handling for platform teams.",
+  "It is the kind of operational gap that often appears right as product usage and background workload volume start climbing.",
+  "If that is a live problem for you, the shortest overview is https://junglegrid.dev.",
   "Benedict",
 ].join(" ");
 
@@ -215,7 +217,7 @@ describe("manual approval send gates", () => {
       evidenceUrls: ["https://acme.dev/contact"],
       personalizationClaims: ["durable jobs"],
       validationStatus: "failed",
-      validationErrors: ["Body must contain 60-80 words."],
+      validationErrors: ["Body must contain 70-140 words."],
     });
     const fetchMock = fetchOk();
     vi.stubGlobal("fetch", fetchMock);

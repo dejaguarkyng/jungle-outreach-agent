@@ -2,6 +2,18 @@ import "dotenv/config";
 import { z } from "zod";
 import { outreachModeSchema } from "@/packages/shared/src";
 
+function clampNumber(value: number, minimum: number, maximum: number): number {
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+function boundedInt(minimum: number, maximum: number, fallback: number) {
+  return z.coerce
+    .number()
+    .int()
+    .default(fallback)
+    .transform((value) => clampNumber(value, minimum, maximum));
+}
+
 const optionalSecret = z.string().trim().optional().transform((value) => value || undefined);
 const optionalUrl = z
   .string()
@@ -26,8 +38,8 @@ const envSchema = z.object({
     .default("junglegrid/outreach-qwen-worker:latest"),
   JUNGLEGRID_OPTIMIZE_FOR: z.enum(["cost", "speed", "balanced"]).default("cost"),
   JUNGLEGRID_REGISTRY_CREDENTIAL_ID: optionalSecret,
-  JUNGLEGRID_POLL_INTERVAL_MS: z.coerce.number().int().min(250).default(3000),
-  JUNGLEGRID_JOB_TIMEOUT_MS: z.coerce.number().int().min(1000).default(1_800_000),
+  JUNGLEGRID_POLL_INTERVAL_MS: boundedInt(250, 60_000, 3000),
+  JUNGLEGRID_JOB_TIMEOUT_MS: boundedInt(1000, 7_200_000, 1_800_000),
   OLLAMA_MODEL: z.string().default("qwen2.5:3b"),
   OLLAMA_HOST: z.string().url().default("http://127.0.0.1:11434"),
   USE_LOCAL_LLM: z
@@ -44,11 +56,11 @@ const envSchema = z.object({
   EMAIL_SEND_MODE: z.enum(["disabled", "manual_approval_only"]).default("disabled"),
   GITHUB_TOKEN: optionalSecret,
   DATABASE_URL: z.string().default("./data/outreach-agent.sqlite"),
-  DAILY_TARGET: z.coerce.number().int().min(1).max(100).default(17),
+  DAILY_TARGET: boundedInt(1, 100, 17),
   JUNGLEGRID_SITE: z.literal("https://junglegrid.dev").default("https://junglegrid.dev"),
-  FIT_SCORE_THRESHOLD: z.coerce.number().int().min(0).max(100).default(70),
-  MAX_DRAFTS_PER_RUN: z.coerce.number().int().min(1).max(100).default(17),
-  MAX_DRAFTS_PER_DOMAIN: z.coerce.number().int().min(1).max(20).default(2),
+  FIT_SCORE_THRESHOLD: boundedInt(0, 100, 70),
+  MAX_DRAFTS_PER_RUN: boundedInt(1, 100, 17),
+  MAX_DRAFTS_PER_DOMAIN: boundedInt(1, 20, 2),
   DRY_RUN: z
     .enum(["true", "false"])
     .default("true")
@@ -61,7 +73,16 @@ export type AppEnv = z.infer<typeof envSchema>;
 let cached: AppEnv | undefined;
 
 export function getEnv(): AppEnv {
-  if (!cached) cached = envSchema.parse(process.env);
+  if (!cached) {
+    const result = envSchema.safeParse(process.env);
+    if (!result.success) {
+      const details = result.error.issues
+        .map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`)
+        .join("; ");
+      throw new Error(`Invalid environment configuration. ${details}`);
+    }
+    cached = result.data;
+  }
   return cached;
 }
 

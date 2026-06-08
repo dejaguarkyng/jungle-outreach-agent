@@ -3,7 +3,7 @@
     {
       "prospect_id": "sample-agent-runtime",
       "name": "Avery Maintainer",
-      "email": "hello@agent-runtime.dev",
+      "email": "avery@agent-runtime.dev",
       "email_source_url": "https://agent-runtime.dev/contact",
       "email_source_type": "official_website",
       "project": "sample/agent-runtime",
@@ -15,12 +15,14 @@
         "https://github.com/sample/agent-runtime#readme"
       ],
       "stars": 840,
-      "active": true
+      "active": true,
+      "owner_type": "User",
+      "updated_at": "2026-06-01T00:00:00Z"
     },
     {
       "prospect_id": "sample-mcp-worker",
       "name": "Morgan Builder",
-      "email": "team@mcp-worker.dev",
+      "email": "morgan@mcp-worker.dev",
       "email_source_url": "https://mcp-worker.dev/about",
       "email_source_type": "official_website",
       "project": "sample/mcp-worker",
@@ -32,7 +34,9 @@
         "https://github.com/sample/mcp-worker#readme"
       ],
       "stars": 320,
-      "active": true
+      "active": true,
+      "owner_type": "User",
+      "updated_at": "2026-06-01T00:00:00Z"
     }
   ]
 }

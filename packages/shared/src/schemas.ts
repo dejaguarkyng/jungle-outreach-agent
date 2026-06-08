@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  ALLOWED_OUTREACH_LINKS,
   JUNGLEGRID_SITE,
   MAX_DRAFT_WORDS,
   MAX_SUBJECT_LENGTH,
@@ -170,7 +171,13 @@ export const artifactEmailDraftSchema = z.object({
   subject: z.string().trim().min(1).max(MAX_SUBJECT_LENGTH),
   body: z.string().trim().min(1),
   word_count: z.number().int().min(MIN_DRAFT_WORDS).max(MAX_DRAFT_WORDS),
-  links: z.array(z.literal(JUNGLEGRID_SITE)).length(1),
+  links: z
+    .array(z.enum(ALLOWED_OUTREACH_LINKS))
+    .min(1)
+    .max(ALLOWED_OUTREACH_LINKS.length)
+    .refine((links) => links.includes(JUNGLEGRID_SITE), {
+      message: `links must include ${JUNGLEGRID_SITE}`,
+    }),
   evidence_urls: z.array(z.string().url()).min(1),
   personalization_claims: z.array(z.string().trim().min(1)).min(1),
   model_mode: modelModeSchema,
@@ -206,11 +213,22 @@ export const researchArtifactSchema = z.object({
   junglegrid_relevance: z.string().min(1),
   evidence_urls: z.array(z.string().url()).min(1),
   evidence_strength: z.number().min(0).max(1),
+  evidence_points: z.array(z.string().min(1)).optional(),
+  pain_signals: z.array(z.string().min(1)).optional(),
 });
 
 export const scoredProspectArtifactSchema = artifactProspectSchema.extend({
   fit_score: z.number().int().min(0).max(100),
   score_breakdown: scoreBreakdownSchema,
+  evidence_strength: z.number().min(0).max(1).optional(),
+  contact_quality: z.number().int().min(0).max(10).optional(),
+  evidence_points: z.array(z.string().min(1)).optional(),
+  why_this_person: z.string().min(1).optional(),
+  why_now: z.string().min(1).optional(),
+  concrete_pain_signal: z.string().min(1).optional(),
+  suggested_angle: z.string().min(1).optional(),
+  outreach_priority: z.enum(["high", "medium", "low"]).optional(),
+  excluded: z.boolean().optional(),
 });
 
 export const runSummaryArtifactSchema = z.object({

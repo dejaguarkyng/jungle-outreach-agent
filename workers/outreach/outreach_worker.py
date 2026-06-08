@@ -7,6 +7,7 @@ import argparse
 import json
 import logging
 import os
+import random
 import re
 import subprocess
 import sys
@@ -17,12 +18,14 @@ import urllib.request
 import uuid
 from collections import Counter
 from datetime import datetime, timezone
+from html import unescape
 from pathlib import Path
 from typing import Any
 
 SITE = "https://junglegrid.dev"
-MIN_WORDS = 60
-MAX_WORDS = 80
+ALLOWED_LINKS = [SITE]
+MIN_WORDS = 70
+MAX_WORDS = 140
 MAX_SUBJECT = 79
 EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)
 URL_RE = re.compile(r"https?://[^\s<>\"')\]]+")
@@ -42,6 +45,61 @@ LIKELY_CONTACT_PATH_RE = re.compile(
 TARGET_TERMS = re.compile(
     r"\b(agent|agentic|mcp|workflow|inference|training|fine[- ]?tun|gpu|batch|"
     r"runtime|compute|orchestrat|model serving|tool calling)\b",
+    re.I,
+)
+CONCRETE_WORKLOAD_RE = re.compile(
+    r"\b(mcp|model context protocol|agent(?:ic)?|llm|rag|evals?|evaluation|inference|fine[- ]?tun\w*|"
+    r"gpu|batch|queue|worker|background jobs?|long[- ]running|deployment|latency|cost|scal\w*|"
+    r"serverless gpu|model serving|vllm|ollama|qwen|runpod|modal|replicate|artifacts?|retries?|"
+    r"tool calling|orchestrat\w*|scheduler|scrap\w*|enrichment)\b",
+    re.I,
+)
+VAGUE_RELEVANCE_RE = re.compile(r"\b(agent|ai|workflow|automation)\b", re.I)
+NON_AI_AGENT_RE = re.compile(
+    r"\b(global-agent|user-agent|http agent|https agent|proxy agent|ssh agent|browser agent|agent forwarding)\b",
+    re.I,
+)
+GENERIC_EMAIL_LOCAL_PARTS = {
+    "opensource",
+    "security",
+    "support",
+    "noreply",
+    "no-reply",
+    "privacy",
+    "legal",
+    "info",
+    "contact",
+    "admin",
+}
+GENERIC_TEAM_EMAIL_LOCAL_PARTS = {"team", "hello", "hi", "founders", "office"}
+LARGE_VENDOR_ORGS = {
+    "microsoft",
+    "aws",
+    "amazon",
+    "google",
+    "meta",
+    "nvidia",
+    "huggingface",
+    "langchain-ai",
+    "openai",
+    "vercel",
+    "cloudflare",
+}
+LARGE_FOUNDATION_ORGS = {
+    "apache",
+    "mozilla",
+    "linuxfoundation",
+    "kubernetes",
+    "pytorch",
+}
+REPO_TYPE_EXCLUSION_RE = re.compile(
+    r"\b(sdk|docs?-only|documentation|examples?|starter|template|boilerplate|showcase|landing page|"
+    r"ui kit|component library|design system|static site|website|awesome list)\b",
+    re.I,
+)
+PAIN_SIGNAL_RE = re.compile(
+    r"\b(background jobs?|workers?|queues?|gpu|latency|cost|scal\w*|deploy(?:ment|ing)?|hosting|"
+    r"performance|retries?|batch|fine[- ]?tun\w*|evals?|artifacts?|long[- ]running|inference)\b",
     re.I,
 )
 JOBS = {
@@ -74,6 +132,152 @@ def clip_words(value: str, limit: int) -> str:
     return " ".join(value.replace("\n", " ").split()[:limit]).rstrip(" ,:;.-")
 
 
+def normalize_name(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+
+
+def split_sentences(value: str) -> list[str]:
+    return [sentence.strip() for sentence in re.split(r"(?<=[.!?])\s+|\n+", value) if sentence.strip()]
+
+
+def parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def days_since(value: str | None) -> int | None:
+    parsed = parse_iso_datetime(value)
+    if parsed is None:
+        return None
+    delta = datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)
+    return max(0, int(delta.total_seconds() // 86400))
+
+
+def bool_env(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def dedupe_store_path() -> Path:
+    raw = os.getenv("OUTREACH_MEMORY_PATH", "data/outreach/prospect_memory.json")
+    return Path(raw)
+
+
+def clean_research_text(value: str) -> str:
+    text = unescape(value or "")
+    text = re.sub(r"<!--.*?-->", " ", text, flags=re.S)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"!\[[^\]]*]\([^)]*\)", " ", text)
+    text = re.sub(r"\[[^\]]+]\([^)]*(?:shields\.io|badge|img\.shields)[^)]*\)", " ", text, flags=re.I)
+    text = re.sub(r"^\s*\[[^\]]+]:\s*\S+\s*$", " ", text, flags=re.M)
+    text = re.sub(r"^\s*[-*]\s+\[[^]]+\]\([^)]*\)\s*$", " ", text, flags=re.M)
+    text = re.sub(r"^\s*(table of contents|toc|navigation|contents)\s*$", " ", text, flags=re.I | re.M)
+    text = re.sub(r"^\s*#{1,6}\s*(table of contents|toc|navigation|contents).*$", " ", text, flags=re.I | re.M)
+    text = re.sub(r"\[(.*?)\]\([^)]*\)", r"\1", text)
+    lines: list[str] = []
+    for raw_line in text.splitlines():
+        line = re.sub(r"[`*_>#|]", " ", raw_line).strip()
+        if not line:
+            continue
+        lowered = normalize_name(line)
+        if not lowered:
+            continue
+        if lowered in {"table of contents", "toc", "contents", "navigation"}:
+            continue
+        if len(line) < 3:
+            continue
+        lines.append(line)
+    return re.sub(r"\s+", " ", " ".join(lines)).strip()
+
+
+def unique_preserve_order(values: list[str]) -> list[str]:
+    return list(dict.fromkeys([value for value in values if value]))
+
+
+def contact_quality(email: str, source_type: str, context: str) -> int:
+    local = email.partition("@")[0].lower()
+    score = {
+        "official_website": 8,
+        "github_profile": 9,
+        "project_docs": 7,
+        "package_page": 6,
+        "repository_readme": 6,
+    }.get(source_type, 5)
+    if local in GENERIC_EMAIL_LOCAL_PARTS:
+        score -= 5
+    elif local in GENERIC_TEAM_EMAIL_LOCAL_PARTS:
+        score -= 2
+    if CONTACT_CONTEXT_RE.search(context):
+        score += 1
+    return max(0, min(10, score))
+
+
+def is_generic_contact_email(email: str) -> bool:
+    return email.partition("@")[0].lower() in GENERIC_EMAIL_LOCAL_PARTS
+
+
+def is_team_email(email: str) -> bool:
+    return email.partition("@")[0].lower() in GENERIC_TEAM_EMAIL_LOCAL_PARTS
+
+
+def is_large_org(owner_login: str) -> bool:
+    normalized = normalize_name(owner_login).replace(" ", "")
+    return normalized in LARGE_VENDOR_ORGS or normalized in LARGE_FOUNDATION_ORGS
+
+
+def owner_key(owner_login: str) -> str:
+    return normalize_name(owner_login).replace(" ", "")
+
+
+def disambiguates_ai_agent(text: str) -> bool:
+    lowered = text.lower()
+    if NON_AI_AGENT_RE.search(lowered):
+        return False
+    if "agent" not in lowered:
+        return False
+    return bool(
+        re.search(
+            r"\b(ai|llm|autonomous|mcp|tool calling|task execution|workflow agent|agent runtime|"
+            r"multi-agent|crewai|langgraph|openai agents?|background worker|long-running jobs?)\b",
+            lowered,
+        )
+    )
+
+
+def extract_evidence_points(text: str) -> list[str]:
+    evidence: list[str] = []
+    for sentence in split_sentences(text):
+        for chunk in re.split(r",|;|\band\b", sentence):
+            lowered = chunk.lower().strip()
+            if NON_AI_AGENT_RE.search(lowered):
+                continue
+            if not CONCRETE_WORKLOAD_RE.search(lowered):
+                continue
+            cleaned = clip_words(chunk.strip(), 18)
+            if cleaned and cleaned not in evidence:
+                evidence.append(cleaned)
+            if len(evidence) == 3:
+                return evidence
+    return evidence
+
+
+def extract_pain_signals(text: str) -> list[str]:
+    signals: list[str] = []
+    for sentence in split_sentences(text):
+        if not PAIN_SIGNAL_RE.search(sentence):
+            continue
+        cleaned = clip_words(sentence, 24)
+        if cleaned and cleaned not in signals:
+            signals.append(cleaned)
+    return signals[:3]
+
+
 def request_json(
     url: str,
     *,
@@ -102,7 +306,7 @@ def source_email(text: str, source_url: str) -> str | None:
         local, _, domain = email.partition("@")
         if not source_url or not domain:
             continue
-        if local in {"noreply", "no-reply", "example", "test"}:
+        if local in {"example", "test"} or local in GENERIC_EMAIL_LOCAL_PARTS:
             continue
         if domain in {"example.com", "example.org", "users.noreply.github.com"}:
             continue
@@ -119,7 +323,7 @@ def profile_email_source(email: str | None, source_url: str) -> str | None:
     local, _, domain = normalized.partition("@")
     if not domain:
         return None
-    if local in {"noreply", "no-reply", "donotreply", "do-not-reply", "example", "test", "admin"}:
+    if local in {"donotreply", "do-not-reply", "example", "test"} or local in GENERIC_EMAIL_LOCAL_PARTS:
         return None
     if domain in {"example.com", "example.org", "example.net", "users.noreply.github.com"}:
         return None
@@ -129,16 +333,7 @@ def profile_email_source(email: str | None, source_url: str) -> str | None:
 
 
 def contact_source_score(source_type: str, email: str, context: str) -> int:
-    base = {
-        "official_website": 100,
-        "project_docs": 90,
-        "package_page": 85,
-        "github_profile": 75,
-        "repository_readme": 70,
-    }.get(source_type, 60)
-    bonus = 8 if CONTACT_CONTEXT_RE.search(context) else 0
-    penalty = -4 if email.startswith(("admin@", "info@")) else 0
-    return base + bonus + penalty
+    return (contact_quality(email, source_type, context) * 10) + (8 if CONTACT_CONTEXT_RE.search(context) else 0)
 
 
 def pick_best_contact(candidates: list[dict[str, str]]) -> dict[str, str] | None:
@@ -164,16 +359,20 @@ def category_for(text: str) -> str:
     lowered = text.lower()
     if "model context protocol" in lowered or re.search(r"\bmcp\b", lowered):
         return "mcp"
-    if "workflow" in lowered or "automation" in lowered:
-        return "workflow_automation"
-    if "fine-tun" in lowered or "training" in lowered or "inference" in lowered:
-        return "inference_training"
-    if "infrastructure" in lowered or "gpu" in lowered:
+    if re.search(r"\b(vllm|ollama|runpod|modal|replicate|serverless gpu|gpu orchestration|model serving)\b", lowered):
         return "ai_infrastructure"
-    if "agent" in lowered and ("runtime" in lowered or "compute" in lowered):
+    if re.search(r"\b(fine[- ]?tun|training|inference|rag|evals?|evaluation)\b", lowered):
+        return "inference_training"
+    if disambiguates_ai_agent(lowered) and re.search(r"\b(runtime|worker|queue|background|compute|long[- ]running)\b", lowered):
         return "agent_compute"
-    if "agent" in lowered:
+    if re.search(r"\b(workflow|automation|scheduler)\b", lowered) and re.search(
+        r"\b(llm|agent|mcp|inference|rag|evals?|worker|queue)\b", lowered
+    ):
+        return "workflow_automation"
+    if disambiguates_ai_agent(lowered):
         return "agent_framework"
+    if re.search(r"\b(llm|rag|evals?|prompt|model)\b", lowered):
+        return "llm_application"
     return "open_source_ai"
 
 
@@ -186,6 +385,8 @@ def normalize_prospect(raw: dict[str, Any]) -> dict[str, Any] | None:
         return None
     if not EMAIL_RE.fullmatch(email):
         return None
+    owner = str(raw.get("owner_login") or project.split("/", 1)[0]).strip()
+    cleaned_research = clean_research_text(str(raw.get("research_text") or raw.get("project_description") or "").strip())
     return {
         "prospect_id": str(raw.get("prospect_id") or uuid.uuid4()),
         "name": str(raw.get("name") or project.split("/")[-1]).strip(),
@@ -193,21 +394,26 @@ def normalize_prospect(raw: dict[str, Any]) -> dict[str, Any] | None:
         "email_source_url": source_url,
         "email_source_type": str(raw.get("email_source_type") or "official_website"),
         "project": project,
+        "project_key": normalize_name(project).replace(" ", "-"),
         "project_url": project_url,
         "project_description": str(raw.get("project_description") or "").strip(),
-        "category": str(raw.get("category") or category_for(project)),
-        "research_text": str(raw.get("research_text") or raw.get("project_description") or "").strip(),
-        "evidence_urls": list(
-            dict.fromkeys(
-                [
-                    source_url,
-                    project_url,
-                    *[str(url) for url in raw.get("evidence_urls", []) if url],
-                ]
-            )
+        "category": str(raw.get("category") or category_for(f"{project} {cleaned_research}")),
+        "research_text": cleaned_research,
+        "evidence_urls": unique_preserve_order(
+            [
+                source_url,
+                project_url,
+                *[str(url) for url in raw.get("evidence_urls", []) if url],
+            ]
         ),
         "stars": int(raw.get("stars") or 0),
         "active": bool(raw.get("active", True)),
+        "owner_login": owner,
+        "owner_type": str(raw.get("owner_type") or ""),
+        "updated_at": str(raw.get("updated_at") or raw.get("pushed_at") or ""),
+        "pushed_at": str(raw.get("pushed_at") or raw.get("updated_at") or ""),
+        "open_issues_count": int(raw.get("open_issues_count") or 0),
+        "readme_present": bool(cleaned_research),
     }
 
 
@@ -351,7 +557,7 @@ def extract_public_emails(text: str, source_url: str) -> list[str]:
         local, _, domain = email.partition("@")
         if not source_url or not domain:
             continue
-        if local in {"noreply", "no-reply", "example", "test"}:
+        if local in {"example", "test"} or local in GENERIC_EMAIL_LOCAL_PARTS:
             continue
         if domain in {"example.com", "example.org", "users.noreply.github.com"}:
             continue
@@ -446,56 +652,87 @@ def package_registry_contacts(package_pages: list[str]) -> list[dict[str, str]]:
     return contacts
 
 
-QUERY_PACKS: dict[str, dict[str, list[str]]] = {
-    "mcp": {
+QUERY_FAMILIES: dict[str, dict[str, Any]] = {
+    "mcp_servers": {
+        "categories": {"mcp", "agent_framework", "agent_compute"},
         "github": [
-            '"model context protocol" stars:>10',
-            'mcp agent tools stars:>8',
-            '"model context protocol" tools stars:>8',
+            '"MCP server" agent workflow stars:>4',
+            '"model context protocol" tools stars:>4',
+            '"OpenAI agents" worker stars:>4',
         ],
-        "registry": ["model context protocol", "mcp tools", "mcp agent"],
+        "registry": ["mcp server", "model context protocol tools", "openai agents worker"],
     },
-    "workflow_automation": {
+    "agent_jobs": {
+        "categories": {"agent_compute", "agent_framework", "workflow_automation"},
         "github": [
-            "workflow automation agent stars:>20",
-            '"durable workflow" stars:>10',
-            '"background jobs" automation stars:>10',
+            '"AI agent" "background jobs" stars:>4',
+            '"agent runtime" queue stars:>4',
+            "CrewAI production stars:>4",
+            "LangGraph queue stars:>4",
         ],
-        "registry": ["workflow automation agent", "durable workflow", "background jobs automation"],
+        "registry": ["ai agent background jobs", "agent runtime queue", "crewai production", "langgraph queue"],
     },
-    "inference_training": {
+    "eval_and_rag": {
+        "categories": {"inference_training", "workflow_automation", "llm_application"},
         "github": [
-            "inference training gpu stars:>20",
-            '"batch inference" training stars:>10',
-            'fine-tuning inference gpu stars:>10',
+            '"LLM eval" batch stars:>4',
+            '"RAG pipeline" worker stars:>4',
+            '"workflow automation" llm workers stars:>4',
         ],
-        "registry": ["vllm inference serving", "batch inference training", "fine tuning inference gpu"],
+        "registry": ["llm eval batch", "rag pipeline worker", "workflow automation llm workers"],
     },
-    "agent_compute": {
+    "model_ops": {
+        "categories": {"inference_training", "ai_infrastructure"},
         "github": [
-            "agent runtime compute stars:>10",
-            "durable execution runtime stars:>10",
-            "worker queue artifacts retries stars:>8",
+            '"fine-tuning" GPU stars:>4',
+            '"inference server" deployment stars:>4',
+            '"vLLM" deployment stars:>4',
+            '"Qwen" inference stars:>4',
+            '"Ollama" server stars:>4',
         ],
-        "registry": ["batch jobs agent runtime", "durable execution runtime", "worker queue artifacts"],
+        "registry": ["fine tuning gpu", "inference server deployment", "vllm deployment", "qwen inference", "ollama server"],
     },
-    "agent_framework": {
+    "gpu_platform_alt": {
+        "categories": {"ai_infrastructure", "workflow_automation"},
         "github": [
-            '"AI agent" framework stars:>20',
-            "agent runtime stars:>15",
-            '"tool calling" agent stars:>10',
+            '"RunPod" GPU stars:>4',
+            '"Modal" batch stars:>4',
+            '"Replicate alternative" stars:>4',
+            '"serverless GPU" stars:>4',
+            '"AI workflow scheduler" stars:>4',
         ],
-        "registry": ["ai agent framework", "agent runtime", "tool calling agent"],
+        "registry": ["runpod gpu", "modal batch", "replicate alternative", "serverless gpu", "ai workflow scheduler"],
     },
-    "ai_infrastructure": {
+    "tooling": {
+        "categories": {"workflow_automation", "llm_application", "agent_framework"},
         "github": [
-            '"AI infrastructure" inference stars:>20',
-            "gpu orchestration inference stars:>15",
-            '"model serving" infrastructure stars:>10',
+            '"Dify" "custom tool" stars:>4',
+            '"Flowise" deployment stars:>4',
+            '"agent runtime" stars:>4',
         ],
-        "registry": ["ai infrastructure inference", "gpu orchestration inference", "model serving infrastructure"],
+        "registry": ["dify custom tool", "flowise deployment", "agent runtime"],
     },
 }
+
+
+def query_seed() -> int:
+    raw = os.getenv("OUTREACH_QUERY_SEED", "").strip()
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            return sum(ord(char) for char in raw)
+    return int(datetime.now(timezone.utc).strftime("%Y%m%d"))
+
+
+def query_pack_order(category: str | None) -> list[dict[str, Any]]:
+    packs = [
+        pack
+        for pack in QUERY_FAMILIES.values()
+        if category is None or not pack.get("categories") or category in pack["categories"]
+    ]
+    random.Random(query_seed()).shuffle(packs)
+    return packs
 
 
 def parse_github_repo(value: str | None) -> tuple[str, str] | None:
@@ -592,6 +829,8 @@ def repo_to_prospect(repo: dict[str, Any], category: str | None) -> dict[str, An
     if not best_contact:
         return None
 
+    combined_text = clean_research_text(f"{repo.get('description', '')} {readme or homepage_text}")
+
     return normalize_prospect(
         {
             "name": profile.get("name") or owner_login,
@@ -601,8 +840,8 @@ def repo_to_prospect(repo: dict[str, Any], category: str | None) -> dict[str, An
             "project": full_name,
             "project_url": repo.get("html_url") or f"https://github.com/{full_name}",
             "project_description": repo.get("description") or "",
-            "category": category or category_for(f"{repo.get('description', '')} {(readme or homepage_text)[:4000]}"),
-            "research_text": (readme or homepage_text)[:20_000],
+            "category": category or category_for(combined_text[:4000]),
+            "research_text": combined_text[:20_000],
             "evidence_urls": [
                 best_contact["source_url"],
                 repo.get("html_url") or f"https://github.com/{full_name}",
@@ -611,6 +850,11 @@ def repo_to_prospect(repo: dict[str, Any], category: str | None) -> dict[str, An
             ],
             "stars": repo.get("stargazers_count") or 0,
             "active": True,
+            "owner_login": owner_login,
+            "owner_type": str((repo.get("owner") or {}).get("type") or ""),
+            "updated_at": str(repo.get("updated_at") or ""),
+            "pushed_at": str(repo.get("pushed_at") or ""),
+            "open_issues_count": int(repo.get("open_issues_count") or 0),
         }
     )
 
@@ -659,144 +903,358 @@ def discover_from_profiles(
     return prospects
 
 
-def discover_from_github(target: int, category: str | None) -> list[dict[str, Any]]:
-    pack = QUERY_PACKS.get(
-        category or "",
-        {"github": ["agent runtime inference workflow stars:>20"], "registry": ["agent runtime inference workflow"]},
+def load_memory() -> dict[str, set[str]]:
+    path = dedupe_store_path()
+    if not path.exists():
+        return {"emails": set(), "owners": set(), "repos": set(), "domains": set(), "names": set()}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"emails": set(), "owners": set(), "repos": set(), "domains": set(), "names": set()}
+    return {
+        "emails": {str(value).strip().lower() for value in payload.get("emails", [])},
+        "owners": {str(value).strip().lower() for value in payload.get("owners", [])},
+        "repos": {str(value).strip().lower() for value in payload.get("repos", [])},
+        "domains": {str(value).strip().lower() for value in payload.get("domains", [])},
+        "names": {str(value).strip().lower() for value in payload.get("names", [])},
+    }
+
+
+def persist_memory(prospects: list[dict[str, Any]]) -> None:
+    path = dedupe_store_path()
+    memory = load_memory()
+    for prospect in prospects:
+        email = prospect["email"].lower()
+        domain = email.partition("@")[2]
+        memory["emails"].add(email)
+        memory["owners"].add(owner_key(prospect.get("owner_login", "")))
+        memory["repos"].add(prospect["project_url"].strip().lower())
+        memory["domains"].add(domain)
+        memory["names"].add(normalize_name(prospect["name"]))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({key: sorted(values) for key, values in memory.items()}, indent=2, ensure_ascii=True) + "\n",
+        encoding="utf-8",
     )
-    queries = pack["github"]
+
+
+def qualification_diagnostics(prospect: dict[str, Any]) -> dict[str, Any]:
+    text = clean_research_text(
+        " ".join(
+            [
+                prospect.get("project", ""),
+                prospect.get("project_description", ""),
+                prospect.get("research_text", ""),
+            ]
+        )
+    )
+    email = prospect["email"].lower()
+    local, _, domain = email.partition("@")
+    owner = prospect.get("owner_login", "")
+    updated_days = days_since(prospect.get("updated_at") or prospect.get("pushed_at"))
+    evidence_points = extract_evidence_points(text)
+    pain_signals = extract_pain_signals(text)
+    repo_label = f"{prospect.get('project', '')} {prospect.get('project_description', '')}"
+    excluded_rule: str | None = None
+    missing_evidence: list[str] = []
+
+    if is_large_org(owner):
+        excluded_rule = "large_vendor_or_foundation_org"
+    elif is_generic_contact_email(email):
+        excluded_rule = "generic_contact_email"
+    elif REPO_TYPE_EXCLUSION_RE.search(repo_label):
+        excluded_rule = "repo_type_excluded"
+    elif not prospect.get("readme_present", False):
+        excluded_rule = "missing_meaningful_readme"
+    elif NON_AI_AGENT_RE.search(text):
+        excluded_rule = "non_ai_agent_context"
+    elif not evidence_points:
+        excluded_rule = "no_concrete_ai_workload_evidence"
+    elif updated_days is None or updated_days > 180:
+        excluded_rule = "stale_project"
+    elif contact_quality(email, prospect["email_source_type"], text[:2000]) < 5:
+        excluded_rule = "low_quality_contact"
+
+    if not evidence_points:
+        missing_evidence.append("concrete workload execution evidence")
+    if len(pain_signals) < 1:
+        missing_evidence.append("execution pain signal")
+    if updated_days is None or updated_days > 180:
+        missing_evidence.append("recent activity")
+    if contact_quality(email, prospect["email_source_type"], text[:2000]) < 7:
+        missing_evidence.append("builder-grade direct contact")
+    if not re.search(r"\b(founder|maintainer|solo|indie|small team|developer)\b", text, re.I) and prospect.get(
+        "owner_type", ""
+    ).lower() != "user":
+        missing_evidence.append("small-team or maintainer context")
+
+    evidence_strength = min(
+        1.0,
+        0.2
+        + (0.2 * min(len(evidence_points), 3))
+        + (0.15 * min(len(pain_signals), 2))
+        + (0.15 if (updated_days is not None and updated_days <= 45) else 0)
+        + (0.1 if prospect.get("owner_type", "").lower() == "user" else 0)
+        + (0.1 if contact_quality(email, prospect["email_source_type"], text[:2000]) >= 7 else 0),
+    )
+    return {
+        "excluded": excluded_rule is not None,
+        "skip_reason": excluded_rule or ("missing_required_evidence" if missing_evidence else ""),
+        "exclusion_rule_triggered": excluded_rule or "",
+        "missing_evidence": missing_evidence,
+        "duplicate": False,
+        "stale": bool(updated_days is None or updated_days > 180),
+        "generic": is_generic_contact_email(email),
+        "irrelevant": not evidence_points or NON_AI_AGENT_RE.search(text) is not None,
+        "large_company": is_large_org(owner),
+        "owner_key": owner_key(owner),
+        "contact_quality": contact_quality(email, prospect["email_source_type"], text[:2000]),
+        "generic_team_email": is_team_email(email),
+        "updated_days": updated_days,
+        "evidence_points": evidence_points,
+        "pain_signals": pain_signals,
+        "small_team_context": bool(
+            prospect.get("owner_type", "").lower() == "user"
+            or re.search(r"\b(founder|maintainer|solo|indie|small team)\b", text, re.I)
+        ),
+        "readme_quality": "meaningful" if prospect.get("readme_present", False) and len(text) >= 140 else "thin",
+    }
+
+
+def discover_from_github(target: int, category: str | None) -> list[dict[str, Any]]:
     prospects: list[dict[str, Any]] = []
     seen_projects: set[str] = set()
     seen_profiles: set[str] = set()
-    for query in queries:
-        if len(prospects) >= target:
-            break
-        for page in (1, 2):
-            if len(prospects) >= target:
+    for pack in query_pack_order(category):
+        queries = list(pack["github"])
+        random.Random(query_seed() + len(prospects)).shuffle(queries)
+        for query in queries:
+            if len(prospects) >= target * 4:
                 break
-            url = "https://api.github.com/search/repositories?" + urllib.parse.urlencode(
-                {"q": f"{query} archived:false fork:false", "sort": "updated", "per_page": 30, "page": page}
-            )
-            try:
-                result = request_json(url, headers=github_headers())
-            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
-                LOG.warning("GitHub discovery unavailable: %s", error)
-                return prospects
-
-            for repo in result.get("items", []):
-                if len(prospects) >= target:
+            for page in (1, 2):
+                if len(prospects) >= target * 4:
                     break
-                full_name = str(repo.get("full_name") or "").strip()
-                if not full_name or full_name.lower() in seen_projects:
-                    continue
-                seen_projects.add(full_name.lower())
-                prospect = repo_to_prospect(repo, category)
-                if prospect:
-                    prospects.append(prospect)
-        if len(prospects) >= target:
-            break
-        for term in pack["registry"]:
-            if len(prospects) >= target:
-                break
-            for owner, repo_name in search_registry_projects(term):
-                full_name = f"{owner}/{repo_name}".lower()
-                if full_name in seen_projects:
-                    continue
+                url = "https://api.github.com/search/repositories?" + urllib.parse.urlencode(
+                    {"q": f"{query} archived:false fork:false", "sort": "updated", "per_page": 20, "page": page}
+                )
                 try:
-                    repo = request_json(
-                        f"https://api.github.com/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo_name)}",
-                        headers=github_headers(),
-                    )
-                except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-                    continue
-                seen_projects.add(full_name)
-                prospect = repo_to_prospect(repo, category)
-                if prospect:
-                    prospects.append(prospect)
-                if len(prospects) >= target:
+                    result = request_json(url, headers=github_headers())
+                except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+                    LOG.warning("GitHub discovery unavailable: %s", error)
+                    return prospects
+                for repo in result.get("items", []):
+                    if len(prospects) >= target * 4:
+                        break
+                    full_name = str(repo.get("full_name") or "").strip().lower()
+                    if not full_name or full_name in seen_projects:
+                        continue
+                    seen_projects.add(full_name)
+                    prospect = repo_to_prospect(repo, category)
+                    if prospect:
+                        prospects.append(prospect)
+            for term in pack["registry"]:
+                if len(prospects) >= target * 4:
                     break
-    if len(prospects) < target:
-        prospects.extend(discover_from_profiles(queries, category, target - len(prospects), seen_projects, seen_profiles))
+                for owner, repo_name in search_registry_projects(term):
+                    full_name = f"{owner}/{repo_name}".lower()
+                    if full_name in seen_projects:
+                        continue
+                    try:
+                        repo = request_json(
+                            f"https://api.github.com/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo_name)}",
+                            headers=github_headers(),
+                        )
+                    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+                        continue
+                    seen_projects.add(full_name)
+                    prospect = repo_to_prospect(repo, category)
+                    if prospect:
+                        prospects.append(prospect)
+                    if len(prospects) >= target * 4:
+                        break
+        if len(prospects) < target * 2:
+            prospects.extend(
+                discover_from_profiles(queries, category, (target * 2) - len(prospects), seen_projects, seen_profiles)
+            )
     return [prospect for prospect in prospects if prospect]
 
 
-def discover(target: int, input_path: Path | None, category: str | None) -> list[dict[str, Any]]:
+def discover(target: int, input_path: Path | None, category: str | None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     excluded_emails = load_json_env_list("OUTREACH_EXCLUDED_EMAILS")
     excluded_domains = load_json_env_list("OUTREACH_EXCLUDED_DOMAINS")
     excluded_project_keys = load_json_env_list("OUTREACH_EXCLUDED_PROJECT_KEYS")
+    allow_generic_email = bool_env("ALLOW_GENERIC_CONTACT_EMAILS")
+    allow_large_company = bool_env("ALLOW_LARGE_COMPANY_RESULTS")
+    memory = load_memory()
     prospects = load_seed(input_path)
     if category:
         prospects = [prospect for prospect in prospects if prospect["category"] == category]
     if len(prospects) < target:
-        prospects.extend(discover_from_github(target - len(prospects), category))
+        prospects.extend(discover_from_github(max(target * 3, target - len(prospects)), category))
     unique: dict[str, dict[str, Any]] = {}
+    skipped: list[dict[str, Any]] = []
     domains: Counter[str] = Counter()
-    max_per_domain = int(os.getenv("MAX_DRAFTS_PER_DOMAIN", "2"))
+    owners: Counter[str] = Counter()
+    categories: Counter[str] = Counter()
+    generic_email_count = 0
+    large_company_count = 0
     for prospect in prospects:
         email = prospect["email"].lower()
         domain = email.split("@")[-1]
         project_key = prospect["project"].strip().lower()
+        diagnostics = qualification_diagnostics(prospect)
+        duplicate_reason = ""
         if (
             email in excluded_emails
             or domain in excluded_domains
             or project_key in excluded_project_keys
             or email in unique
-            or domains[domain] >= max_per_domain
+            or email in memory["emails"]
+            or owner_key(prospect.get("owner_login", "")) in memory["owners"]
+            or prospect["project_url"].strip().lower() in memory["repos"]
+            or normalize_name(prospect["name"]) in memory["names"]
         ):
+            duplicate_reason = "duplicate_or_previously_seen"
+        if duplicate_reason:
+            diagnostics.update(
+                {
+                    "excluded": True,
+                    "skip_reason": duplicate_reason,
+                    "exclusion_rule_triggered": duplicate_reason,
+                    "duplicate": True,
+                }
+            )
+        if diagnostics["excluded"] and (diagnostics["generic"] and allow_generic_email):
+            diagnostics["excluded"] = False
+            diagnostics["skip_reason"] = ""
+            diagnostics["exclusion_rule_triggered"] = ""
+        if diagnostics["large_company"] and allow_large_company:
+            diagnostics["excluded"] = False
+            diagnostics["skip_reason"] = ""
+            diagnostics["exclusion_rule_triggered"] = ""
+        owner = diagnostics["owner_key"]
+        if not diagnostics["excluded"] and owners[owner] >= 1:
+            diagnostics.update(
+                {
+                    "excluded": True,
+                    "skip_reason": "owner_diversity_cap",
+                    "exclusion_rule_triggered": "owner_diversity_cap",
+                }
+            )
+        if not diagnostics["excluded"] and categories[prospect["category"]] >= 2:
+            diagnostics.update(
+                {
+                    "excluded": True,
+                    "skip_reason": "category_diversity_cap",
+                    "exclusion_rule_triggered": "category_diversity_cap",
+                }
+            )
+        if not diagnostics["excluded"] and diagnostics["generic"] and generic_email_count >= 1:
+            diagnostics.update(
+                {
+                    "excluded": True,
+                    "skip_reason": "generic_email_cap",
+                    "exclusion_rule_triggered": "generic_email_cap",
+                }
+            )
+        if not diagnostics["excluded"] and diagnostics["large_company"] and large_company_count >= 1:
+            diagnostics.update(
+                {
+                    "excluded": True,
+                    "skip_reason": "large_company_cap",
+                    "exclusion_rule_triggered": "large_company_cap",
+                }
+            )
+        if diagnostics["excluded"]:
+            skipped.append(
+                {
+                    "prospect_id": prospect["prospect_id"],
+                    "project": prospect["project"],
+                    "email": prospect["email"],
+                    "category": prospect["category"],
+                    **diagnostics,
+                }
+            )
             continue
+        prospect["diagnostics"] = diagnostics
         unique[email] = prospect
         domains[domain] += 1
-    return list(unique.values())[:target]
+        owners[owner] += 1
+        categories[prospect["category"]] += 1
+        if diagnostics["generic"]:
+            generic_email_count += 1
+        if diagnostics["large_company"]:
+            large_company_count += 1
+        if len(unique) >= target:
+            break
+    accepted = list(unique.values())[:target]
+    persist_memory(accepted)
+    return accepted, skipped
 
 
 def pick_detail(text: str, fallback: str) -> str:
-    clean = re.sub(r"[#>*_`|\[\]()]", " ", text)
-    clean = re.sub(r"\s+", " ", clean).strip()
-    sentences = re.split(r"(?<=[.!?])\s+", clean)
+    clean = clean_research_text(text)
+    sentences = split_sentences(clean)
     for sentence in sentences:
-        if 35 <= len(sentence) <= 240 and TARGET_TERMS.search(sentence):
+        if 35 <= len(sentence) <= 240 and CONCRETE_WORKLOAD_RE.search(sentence):
             return sentence
-    return fallback or "the project documents agent-oriented compute workflows"
+    return fallback or "the project documents durable AI workload execution"
 
 
 def research(prospects: list[dict[str, Any]]) -> list[dict[str, Any]]:
     notes = []
     for prospect in prospects:
-        fallback = prospect["project_description"] or f"{prospect['project']} is an open-source AI project"
-        detail = pick_detail(prospect["research_text"], fallback)
-        strength = min(1.0, 0.45 + 0.1 * len(prospect["evidence_urls"]) + (0.2 if detail != fallback else 0))
+        diagnostics = prospect.get("diagnostics", qualification_diagnostics(prospect))
+        evidence_points = diagnostics["evidence_points"] or [
+            pick_detail(prospect["research_text"], prospect["project_description"] or prospect["project"])
+        ]
+        pain_signal = diagnostics["pain_signals"][0] if diagnostics["pain_signals"] else evidence_points[0]
+        summary_parts = evidence_points[:2]
+        strength = max(0.0, min(1.0, float(diagnostics.get("contact_quality", 0)) / 10 * 0.15 + 0.25 + 0.25 * len(evidence_points) + (0.15 if diagnostics.get("small_team_context") else 0) + (0.2 if not diagnostics.get("stale") else 0)))
         notes.append(
             {
                 "prospect_id": prospect["prospect_id"],
-                "summary": clip_words(f"{prospect['project']} documents {detail}", 55),
-                "personalization_detail": clip_words(detail, 28),
-                "junglegrid_relevance": (
-                    "The documented workload can benefit from durable compute jobs, logs, retries, "
-                    "and retrievable artifacts."
+                "summary": clip_words(f"{prospect['project']} shows {'. '.join(summary_parts)}", 45),
+                "personalization_detail": clip_words(evidence_points[0], 20),
+                "junglegrid_relevance": clip_words(
+                    f"Likely fit because {pain_signal} points to real execution overhead around queues, workers, inference, or long-running jobs.",
+                    28,
                 ),
                 "evidence_urls": prospect["evidence_urls"],
                 "evidence_strength": round(strength, 2),
+                "evidence_points": evidence_points,
+                "pain_signals": diagnostics["pain_signals"],
             }
         )
     return notes
 
 
 def score_breakdown(prospect: dict[str, Any], note: dict[str, Any]) -> dict[str, int]:
-    text = " ".join(
-        [
-            prospect["project"],
-            prospect["project_description"],
-            note["summary"],
-            note["personalization_detail"],
-        ]
+    text = clean_research_text(
+        " ".join(
+            [
+                prospect["project"],
+                prospect["project_description"],
+                note["summary"],
+                note["personalization_detail"],
+                " ".join(note.get("evidence_points", [])),
+            ]
+        )
     )
     category = prospect["category"]
-    agent = 20 if category in {"agent_framework", "mcp", "agent_compute"} else (12 if re.search(r"\bagent\b", text, re.I) else 6)
-    workload = 20 if category in {"ai_infrastructure", "inference_training", "agent_compute"} else (13 if re.search(r"\b(inference|training|gpu|batch)\b", text, re.I) else 7)
-    infrastructure = 20 if re.search(r"\b(runtime|compute|queue|retry|artifact|worker|orchestrat)\w*\b", text, re.I) else 9
-    activity = 15 if prospect["active"] and prospect["stars"] >= 100 else (12 if prospect["active"] else 4)
-    comprehension = 15 if workload >= 13 and infrastructure >= 15 else 9
-    contact = 10 if prospect["email_source_type"] in {"github_profile", "official_website"} else 8
+    evidence_points = note.get("evidence_points", [])
+    pain_signals = note.get("pain_signals", [])
+    contact = int(prospect.get("diagnostics", {}).get("contact_quality", 0))
+    updated_days = prospect.get("diagnostics", {}).get("updated_days")
+    agent = 20 if category in {"agent_framework", "mcp", "agent_compute"} and evidence_points else (
+        14 if disambiguates_ai_agent(text) else 2
+    )
+    workload = 20 if re.search(r"\b(inference|gpu|batch|fine[- ]?tun|eval|rag|worker|queue)\b", text, re.I) and len(evidence_points) >= 2 else (
+        12 if evidence_points else 0
+    )
+    infrastructure = 20 if pain_signals else (12 if re.search(r"\b(runtime|deploy|latency|cost|artifact|retry)\b", text, re.I) else 0)
+    activity = 15 if updated_days is not None and updated_days <= 30 else (11 if updated_days is not None and updated_days <= 90 else 4)
+    comprehension = 15 if len(evidence_points) >= 2 and pain_signals else (8 if len(evidence_points) >= 2 else 0)
     return {
         "agentMcpRelevance": min(20, agent),
         "aiWorkloadRelevance": min(20, workload),
@@ -814,7 +1272,35 @@ def score(prospects: list[dict[str, Any]], notes: list[dict[str, Any]]) -> list[
         note = by_id[prospect["prospect_id"]]
         breakdown = score_breakdown(prospect, note)
         public = {key: value for key, value in prospect.items() if key not in {"research_text", "evidence_urls", "stars", "active"}}
-        rows.append({**public, "fit_score": sum(breakdown.values()), "score_breakdown": breakdown})
+        diagnostics = prospect.get("diagnostics", {})
+        evidence_points = note.get("evidence_points", [])
+        concrete_pain_signal = (note.get("pain_signals") or evidence_points or [prospect["project_description"]])[0]
+        fit_score = sum(breakdown.values())
+        rows.append(
+            {
+                **public,
+                "fit_score": fit_score,
+                "score_breakdown": breakdown,
+                "evidence_strength": note["evidence_strength"],
+                "contact_quality": diagnostics.get("contact_quality", 0),
+                "evidence_points": evidence_points,
+                "why_this_person": clip_words(
+                    f"{prospect['name']} appears to be a reachable maintainer or builder for {prospect['project']}.",
+                    20,
+                ),
+                "why_now": clip_words(
+                    f"The repo is active and currently surfaces execution concerns like {concrete_pain_signal}.",
+                    20,
+                ),
+                "concrete_pain_signal": concrete_pain_signal,
+                "suggested_angle": clip_words(
+                    "Position Jungle Grid as durable execution for inference, workers, retries, and inspectable artifacts.",
+                    18,
+                ),
+                "outreach_priority": "high" if fit_score >= 85 else ("medium" if fit_score >= 75 else "low"),
+                "excluded": False,
+            }
+        )
     return rows
 
 
@@ -822,30 +1308,30 @@ def template_draft(prospect: dict[str, Any], note: dict[str, Any]) -> tuple[str,
     first_name = prospect["name"].split()[0] if prospect["name"].strip() else "there"
     project_name = prospect["project"].split("/")[-1]
     detail = clip_words(note["personalization_detail"], 14)
+    pain = clip_words((note.get("pain_signals") or [note["personalization_detail"]])[0], 14)
     body = (
         f"Hi {first_name},\n\n"
-        f"I read the public documentation for {project_name} and noticed {detail}. "
-        "I’m building Jungle Grid, an execution layer for agent-triggered inference, batch jobs, "
-        "logs, retries, and artifacts.\n\n"
-        "The workload you describe seems relevant because teams need reliable compute beyond "
-        "lightweight tool calls. I thought this might be useful as you develop the project: "
-        f"{SITE}\n\nBenedict"
+        f"I read the public docs for {project_name} and noticed {detail}. "
+        "I’m building Jungle Grid for teams that need to run inference, workers, and other long-running AI jobs without building queueing, retries, and artifact handling from scratch.\n\n"
+        f"The reason I reached out is that {pain}. That usually shows up when an AI product moves from demos into real workloads and the background execution layer starts becoming the bottleneck.\n\n"
+        f"If that is a live problem for you, the shortest overview is {SITE}.\n\n"
+        "Benedict"
     )
     if word_count(body) < MIN_WORDS:
         body = body.replace(
-            "I thought this might",
-            "The system remains auditable and keeps outputs available for review. I thought this might",
+            "The reason I reached out is that",
+            "The reason I reached out is that, in practice, teams usually hit friction around observability and job durability once usage grows, and",
         )
     if word_count(body) > MAX_WORDS:
-        detail = clip_words(note["personalization_detail"], 8)
-        return template_draft(prospect, {**note, "personalization_detail": detail})
+        detail = clip_words(note["personalization_detail"], 10)
+        return template_draft(prospect, {**note, "personalization_detail": detail, "pain_signals": [pain]})
     return f"Jungle Grid and {project_name}"[:MAX_SUBJECT], body, [detail]
 
 
 SYSTEM_PROMPT = (
     "You write concise founder-led outreach emails using only the provided evidence. "
-    "Do not invent facts. Do not include more than one link. The only allowed link is "
-    "https://junglegrid.dev. Keep the email between 60 and 80 words. If evidence is "
+    "Do not invent facts. Output plain text only. Include exactly one link and it must be "
+    "https://junglegrid.dev. Keep the email under 140 words. If evidence is "
     "insufficient, return SKIP."
 )
 
@@ -999,9 +1485,9 @@ def validate_draft(draft: dict[str, Any], max_per_domain: int, domains: Counter[
         errors.append(f"body must contain {MIN_WORDS}-{MAX_WORDS} words; found {count}")
     if len(draft["subject"]) > MAX_SUBJECT:
         errors.append("subject must be under 80 characters")
-    if links != [SITE]:
-        errors.append(f"draft must contain exactly one link and it must be {SITE}")
-    if re.search(r"<(?:img|a|script|style)\b|tracking\s*pixel|utm_", body, re.I):
+    if links != ALLOWED_LINKS:
+        errors.append(f"draft must contain exactly one link: {SITE}")
+    if re.search(r"<(?:img|a|script|style|html|body)\b|tracking\s*pixel|utm_|unsubscribe|open tracking", body, re.I):
         errors.append("tracking and HTML are not allowed")
     if re.search(r"\battachment\b", body, re.I):
         errors.append("attachments are not allowed")
@@ -1011,6 +1497,8 @@ def validate_draft(draft: dict[str, Any], max_per_domain: int, domains: Counter[
         errors.append("email source URL must be included in evidence URLs")
     if not draft["personalization_claims"]:
         errors.append("at least one evidence-bound personalization claim is required")
+    if re.search(r"\bi noticed you are using gpus?\b", body, re.I) and "gpu" not in " ".join(draft["personalization_claims"]).lower():
+        errors.append("GPU claims must be evidence-backed")
     project_terms = [
         term for term in re.split(r"[^a-z0-9]+", draft["project"].lower()) if len(term) >= 3
     ]
@@ -1045,13 +1533,22 @@ def write_drafts(
     seen_emails: set[str] = set()
     for prospect in scored:
         note = by_id[prospect["prospect_id"]]
-        if prospect["fit_score"] < threshold or note["evidence_strength"] < 0.6:
+        if (
+            prospect["fit_score"] < max(threshold, 75)
+            or note["evidence_strength"] < 0.8
+            or int(prospect.get("contact_quality", 0)) < 7
+            or len(prospect.get("evidence_points", [])) < 2
+            or prospect.get("excluded")
+        ):
             failures.append(
                 {
                     "prospect_id": prospect["prospect_id"],
-                    "errors": ["prospect did not meet fit or evidence threshold"],
+                    "errors": ["prospect did not pass the buyer-fit gate"],
                 }
             )
+            continue
+        if is_generic_contact_email(prospect["email"]):
+            failures.append({"prospect_id": prospect["prospect_id"], "errors": ["generic support inbox is not allowed"]})
             continue
         if prospect["email"].lower() in seen_emails:
             failures.append({"prospect_id": prospect["prospect_id"], "errors": ["duplicate email"]})
@@ -1113,7 +1610,7 @@ def run(args: argparse.Namespace) -> int:
         started = utc_now()
         output = Path(args.output)
         input_path = Path(args.input) if args.input else None
-        prospects = discover(args.target, input_path, args.category)
+        prospects, skipped = discover(args.target, input_path, args.category)
         notes = research(prospects)
         scored = score(prospects, notes)
         use_qwen = args.job in {"write-emails-qwen", "full-run-qwen"}
@@ -1132,7 +1629,7 @@ def run(args: argparse.Namespace) -> int:
             {
                 key: value
                 for key, value in row.items()
-                if key not in {"research_text", "evidence_urls", "stars", "active"}
+                if key not in {"research_text", "evidence_urls", "stars", "active", "diagnostics"}
             }
             for row in prospects
         ]
@@ -1146,7 +1643,7 @@ def run(args: argparse.Namespace) -> int:
             "scored": len(scored),
             "drafts_passed": len(drafts),
             "drafts_failed": len(failures),
-            "skipped": len(failures),
+            "skipped": len(skipped) + len(failures),
             "fallback_used": fallback_used,
             "model": os.getenv("OLLAMA_MODEL", "qwen2.5:3b") if use_qwen else "template",
             "started_at": started,
@@ -1158,6 +1655,7 @@ def run(args: argparse.Namespace) -> int:
             "passed": len(drafts),
             "failed": len(failures),
             "errors": failures,
+            "skipped_prospects": skipped,
         }
         write_json(output, "prospects.json", public_prospects)
         write_json(output, "research_notes.json", notes)

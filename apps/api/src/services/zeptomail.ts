@@ -237,6 +237,7 @@ export class ZeptoMailService {
         "It verifies the send-mail token, verified sender, reply-to address, and plain-text payload.",
         "The application keeps research drafts internal until a human approves them, then sends only after an explicit click.",
         "It uses no extra resources or scheduled automation in this test before operators enable the manual approval mode for compliant transactional workflows.",
+        "The goal is simply to confirm that a valid builder-style plain-text message can leave the system with the current sender settings.",
         "Site: https://junglegrid.dev",
         "Benedict",
       ].join(" "),

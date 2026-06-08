@@ -1,4 +1,5 @@
 import {
+  ALLOWED_OUTREACH_LINKS,
   JUNGLEGRID_SITE,
   MAX_DRAFT_WORDS,
   MAX_SUBJECT_LENGTH,
@@ -44,9 +45,12 @@ export function validateDraftContent(subject: string, body: string): DraftValida
     errors.push(`Subject must be under 80 characters; found ${subject.trim().length}.`);
   }
   if (links.length !== 1) {
-    errors.push(`Draft must contain exactly one link; found ${links.length}.`);
-  } else if (links[0] !== JUNGLEGRID_SITE) {
-    errors.push(`The only allowed link is ${JUNGLEGRID_SITE}.`);
+    errors.push(`Draft must contain exactly 1 link; found ${links.length}.`);
+  } else if (links.some((link) => !ALLOWED_OUTREACH_LINKS.includes(link as (typeof ALLOWED_OUTREACH_LINKS)[number]))) {
+    errors.push(`Allowed links are: ${ALLOWED_OUTREACH_LINKS.join(", ")}.`);
+  }
+  if (!links.includes(JUNGLEGRID_SITE)) {
+    errors.push(`Draft must include ${JUNGLEGRID_SITE}.`);
   }
   if (/<(?:a|script|style|html|body)\b/i.test(body) || trackingPattern.test(body)) {
     errors.push("HTML, tracking content, and tracking parameters are not allowed.");

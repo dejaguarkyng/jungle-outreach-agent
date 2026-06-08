@@ -2,6 +2,7 @@ import { z } from "zod";
 import { MAX_SUBJECT_LENGTH } from "@/packages/shared/src/constants";
 
 export {
+  ALLOWED_OUTREACH_LINKS,
   JUNGLEGRID_SITE as ALLOWED_LINK,
   countWords,
   extractLinks,

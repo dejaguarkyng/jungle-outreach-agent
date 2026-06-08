@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { Ban, Save, Send, ShieldCheck, X } from "lucide-react";
+import { ALLOWED_OUTREACH_LINKS, MAX_DRAFT_WORDS, MIN_DRAFT_WORDS } from "@/packages/shared/src";
 import type { EmailDraft, Prospect } from "@/src/domain/schemas";
 import { editableDraftSchema, extractLinks, countWords } from "@/src/safety/email-validation";
 import { Card } from "@/components/ui/card";
@@ -17,6 +18,14 @@ import type { z } from "zod";
 
 type DraftRow = EmailDraft & { prospect: Prospect };
 type DraftForm = z.infer<typeof editableDraftSchema>;
+
+function validLinkCount(links: string[]): boolean {
+  return (
+    links.length >= 1 &&
+    links.length <= ALLOWED_OUTREACH_LINKS.length &&
+    links.every((link) => ALLOWED_OUTREACH_LINKS.includes(link as (typeof ALLOWED_OUTREACH_LINKS)[number]))
+  );
+}
 
 export function DraftWorkspace({ initialDrafts }: { initialDrafts: DraftRow[] }) {
   const [drafts, setDrafts] = useState(initialDrafts);
@@ -95,7 +104,7 @@ export function DraftWorkspace({ initialDrafts }: { initialDrafts: DraftRow[] })
               <p className="mt-1 truncate text-xs text-muted-foreground">{draft.subject}</p>
               <div className="mt-3 flex gap-3 font-mono text-[11px] text-muted-foreground">
                 <span>{draft.wordCount} words</span>
-                <span>{draft.links.length} link</span>
+                <span>{draft.links.length} links</span>
                 <span>{draft.approvalStatus}</span>
                 <span>{formatDate(draft.createdAt)}</span>
               </div>
@@ -200,10 +209,10 @@ function DraftEditor({
           </p>
         </div>
         <div className="flex gap-2">
-          <Badge tone={wordCount >= 60 && wordCount <= 80 ? "green" : "red"}>
+          <Badge tone={wordCount >= MIN_DRAFT_WORDS && wordCount <= MAX_DRAFT_WORDS ? "green" : "red"}>
             {wordCount} words
           </Badge>
-          <Badge tone={links.length === 1 ? "green" : "red"}>{links.length} link</Badge>
+          <Badge tone={validLinkCount(links) ? "green" : "red"}>{links.length} links</Badge>
           <Badge tone={draft.approvalStatus === "approved" ? "green" : draft.approvalStatus === "rejected" ? "red" : "amber"}>
             {draft.approvalStatus}
           </Badge>

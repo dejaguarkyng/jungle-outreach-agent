@@ -32,11 +32,11 @@ const prospect: Prospect = {
 
 const body = `Hi Jane,
 
-I saw your work on Acme's agent runtime and its durable job queue. I’m building Jungle Grid, an AI execution layer for agent-triggered workloads, inference, batch jobs, logs, retries, and artifacts.
+I saw your work on Acme's agent runtime and its durable job queue. I’m building Jungle Grid for teams that need to run inference, workers, and long-running AI jobs without stitching together queueing, retries, and artifact handling themselves.
 
-I’m reaching out because agent tools need reliable compute beyond lightweight API calls. It seems close to the execution problems teams encounter as workloads grow.
+I’m reaching out because agent tools need reliable compute beyond lightweight API calls. It seems close to the execution problems teams hit once workloads grow into production systems and the background execution layer starts becoming a bottleneck.
 
-Thought it might be relevant: https://junglegrid.dev
+If that is a live problem for you, the shortest overview is https://junglegrid.dev.
 
 Benedict`;
 

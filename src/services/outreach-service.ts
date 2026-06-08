@@ -5,6 +5,7 @@ import { EmailCopywriter } from "@/src/services/email-copywriter";
 import { scoreProspect } from "@/src/services/fit-scoring";
 import {
   assertDraftContent,
+  extractLinks,
   validateEmailDraftArtifact,
 } from "@/src/safety/email-validation";
 import type { EmailDraft, ProspectCategory } from "@/src/domain/schemas";
@@ -128,7 +129,7 @@ export class OutreachService {
         const draft = this.repository.saveDraft(prospect.id, {
           ...copy,
           wordCount: validation.wordCount,
-          links: ["https://junglegrid.dev"],
+          links: extractLinks(`${copy.subject}\n${copy.body}`),
           evidenceUrls,
           personalizationClaims: [research.personalizationDetail],
           validationStatus: "passed",
