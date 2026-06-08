@@ -32,7 +32,7 @@ jobs:
             echo "Draft-only Jungle Grid outreach agent release."
             echo
             echo "## Docker image"
-            echo "\`ghcr.io/jungle-grid/outreach-qwen-worker:${GITHUB_REF_NAME}\`"
+            echo "\`junglegrid/outreach-qwen-worker:${GITHUB_REF_NAME}\`"
             echo
             echo "## Install"
             echo "\`npm install && cp .env.example .env\`"

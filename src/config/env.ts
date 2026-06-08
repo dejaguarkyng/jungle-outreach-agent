@@ -23,7 +23,7 @@ const envSchema = z.object({
   JUNGLEGRID_DEFAULT_WORKLOAD_TYPE: z.enum(["batch", "inference"]).default("inference"),
   JUNGLEGRID_DEFAULT_IMAGE: z
     .string()
-    .default("ghcr.io/jungle-grid/outreach-qwen-worker:latest"),
+    .default("junglegrid/outreach-qwen-worker:latest"),
   JUNGLEGRID_OPTIMIZE_FOR: z.enum(["cost", "speed", "balanced"]).default("cost"),
   JUNGLEGRID_REGISTRY_CREDENTIAL_ID: optionalSecret,
   JUNGLEGRID_POLL_INTERVAL_MS: z.coerce.number().int().min(250).default(3000),
