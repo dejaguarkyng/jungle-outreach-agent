@@ -26,8 +26,17 @@ MAX_WORDS = 80
 MAX_SUBJECT = 79
 EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)
 URL_RE = re.compile(r"https?://[^\s<>\"')\]]+")
+HREF_RE = re.compile(r'href=["\']([^"\'#]+)["\']', re.I)
 CONTACT_CONTEXT_RE = re.compile(
     r"\b(contact|business|partnerships?|inquiries|reach(?:\s+us)?|email|support|hello)\b",
+    re.I,
+)
+LIKELY_DOCS_PATH_RE = re.compile(
+    r"(?:^|/)(docs?|guide|developers?|api|reference|manual)(?:/|$)",
+    re.I,
+)
+LIKELY_CONTACT_PATH_RE = re.compile(
+    r"(?:^|/)(contact|about|team|company|support|docs|legal|privacy|impressum)(?:/|$)",
     re.I,
 )
 TARGET_TERMS = re.compile(
@@ -101,6 +110,54 @@ def source_email(text: str, source_url: str) -> str | None:
         if CONTACT_CONTEXT_RE.search(context):
             return email
     return None
+
+
+def profile_email_source(email: str | None, source_url: str) -> str | None:
+    if not email:
+        return None
+    normalized = email.strip().lower().rstrip(".,;:")
+    local, _, domain = normalized.partition("@")
+    if not domain:
+        return None
+    if local in {"noreply", "no-reply", "donotreply", "do-not-reply", "example", "test", "admin"}:
+        return None
+    if domain in {"example.com", "example.org", "example.net", "users.noreply.github.com"}:
+        return None
+    if not EMAIL_RE.fullmatch(normalized):
+        return None
+    return normalized
+
+
+def contact_source_score(source_type: str, email: str, context: str) -> int:
+    base = {
+        "official_website": 100,
+        "project_docs": 90,
+        "package_page": 85,
+        "github_profile": 75,
+        "repository_readme": 70,
+    }.get(source_type, 60)
+    bonus = 8 if CONTACT_CONTEXT_RE.search(context) else 0
+    penalty = -4 if email.startswith(("admin@", "info@")) else 0
+    return base + bonus + penalty
+
+
+def pick_best_contact(candidates: list[dict[str, str]]) -> dict[str, str] | None:
+    if not candidates:
+        return None
+    unique: dict[tuple[str, str], dict[str, str]] = {}
+    for candidate in candidates:
+        key = (candidate["email"], candidate["source_url"])
+        previous = unique.get(key)
+        if not previous or contact_source_score(
+            candidate["source_type"], candidate["email"], candidate.get("context", "")
+        ) > contact_source_score(previous["source_type"], previous["email"], previous.get("context", "")):
+            unique[key] = candidate
+    return max(
+        unique.values(),
+        key=lambda candidate: contact_source_score(
+            candidate["source_type"], candidate["email"], candidate.get("context", "")
+        ),
+    )
 
 
 def category_for(text: str) -> str:
@@ -188,57 +245,478 @@ def github_headers() -> dict[str, str]:
     return headers
 
 
-def discover_from_github(target: int, category: str | None) -> list[dict[str, Any]]:
-    query = {
-        "mcp": '"model context protocol" stars:>10',
-        "workflow_automation": "workflow automation agent stars:>20",
-        "inference_training": "inference training gpu stars:>20",
-        "agent_compute": "agent runtime compute stars:>10",
-    }.get(category or "", "agent runtime inference workflow stars:>20")
-    url = "https://api.github.com/search/repositories?" + urllib.parse.urlencode(
-        {"q": f"{query} archived:false fork:false", "sort": "updated", "per_page": min(target * 3, 50)}
-    )
-    try:
-        result = request_json(url, headers=github_headers())
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
-        LOG.warning("GitHub discovery unavailable: %s", error)
-        return []
+def fetch_text(url: str, timeout: int = 20, limit: int = 120_000) -> str:
+    request = urllib.request.Request(url, headers={"User-Agent": "jungle-outreach-agent/0.1"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return response.read(limit).decode("utf-8", errors="replace")
 
-    prospects: list[dict[str, Any]] = []
-    for repo in result.get("items", []):
-        if len(prospects) >= target:
-            break
-        full_name = repo.get("full_name")
-        default_branch = repo.get("default_branch") or "main"
-        if not full_name:
-            continue
-        readme_url = f"https://raw.githubusercontent.com/{full_name}/{default_branch}/README.md"
+
+def is_docs_url(url: urllib.parse.ParseResult, base: urllib.parse.ParseResult) -> bool:
+    hostname = (url.hostname or "").lower()
+    base_hostname = (base.hostname or "").lower().removeprefix("www.")
+    return bool(
+        LIKELY_DOCS_PATH_RE.search(url.path or "/")
+        or hostname.startswith("docs.")
+        or hostname == f"docs.{base_hostname}"
+        or hostname.endswith("readthedocs.io")
+        or hostname.endswith("github.io")
+        or hostname.endswith("mintlify.app")
+    )
+
+
+def extract_likely_site_links(html: str, base_urls: list[str]) -> list[str]:
+    parsed_bases: list[urllib.parse.ParseResult] = []
+    for base_url in base_urls:
         try:
-            request = urllib.request.Request(readme_url, headers={"User-Agent": "jungle-outreach-agent/0.1"})
-            with urllib.request.urlopen(request, timeout=20) as response:
-                readme = response.read(100_000).decode("utf-8", errors="replace")
-        except (urllib.error.URLError, TimeoutError):
+            parsed_bases.append(urllib.parse.urlparse(base_url))
+        except ValueError:
             continue
-        email = source_email(readme, f"https://github.com/{full_name}#readme")
-        if not email:
+    if not parsed_bases:
+        return []
+    links: list[str] = []
+    for match in HREF_RE.finditer(html):
+        raw = (match.group(1) or "").strip()
+        if not raw:
             continue
-        prospects.append(
-            normalize_prospect(
+        try:
+            absolute = urllib.parse.urljoin(base_urls[0], raw)
+            parsed = urllib.parse.urlparse(absolute)
+        except ValueError:
+            continue
+        if parsed.scheme not in {"http", "https"}:
+            continue
+        if not any(parsed.netloc == base.netloc or is_docs_url(parsed, base) for base in parsed_bases):
+            continue
+        if not LIKELY_CONTACT_PATH_RE.search(parsed.path or "/") and not any(
+            is_docs_url(parsed, base) for base in parsed_bases
+        ):
+            continue
+        links.append(parsed.geturl())
+    return list(dict.fromkeys(links))
+
+
+def website_contacts(start_urls: list[str] | str, source_type: str = "official_website") -> tuple[list[dict[str, str]], str]:
+    queue = [start_urls] if isinstance(start_urls, str) else [url for url in start_urls if url]
+    queue = list(dict.fromkeys(queue))
+    seed_urls = list(queue)
+    parsed_bases: list[urllib.parse.ParseResult] = []
+    for url in queue:
+        try:
+            parsed = urllib.parse.urlparse(url)
+        except ValueError:
+            continue
+        if parsed.scheme in {"http", "https"}:
+            parsed_bases.append(parsed)
+    if not parsed_bases:
+        return [], ""
+    visited: set[str] = set()
+    latest_text = ""
+    contacts: list[dict[str, str]] = []
+    while queue and len(visited) < 5:
+        current = queue.pop(0)
+        if current in visited:
+            continue
+        visited.add(current)
+        try:
+            text = fetch_text(current)
+        except (urllib.error.URLError, TimeoutError, ValueError):
+            continue
+        latest_text = text
+        parsed_current = urllib.parse.urlparse(current)
+        effective_source_type = (
+            "project_docs" if any(is_docs_url(parsed_current, base) for base in parsed_bases) else source_type
+        )
+        for email in extract_public_emails(text, current):
+            contacts.append(
                 {
-                    "name": repo.get("owner", {}).get("login") or full_name.split("/")[0],
                     "email": email,
-                    "email_source_url": f"https://github.com/{full_name}#readme",
-                    "email_source_type": "repository_readme",
-                    "project": full_name,
-                    "project_url": repo.get("html_url") or f"https://github.com/{full_name}",
-                    "project_description": repo.get("description") or "",
-                    "category": category_for(f"{repo.get('description', '')} {readme[:4000]}"),
-                    "research_text": readme[:20_000],
-                    "stars": repo.get("stargazers_count") or 0,
-                    "active": True,
+                    "source_url": current,
+                    "source_type": effective_source_type,
+                    "context": text[:5000],
                 }
             )
+        for link in extract_likely_site_links(text, seed_urls):
+            if link not in visited and link not in queue:
+                queue.append(link)
+    return contacts, latest_text
+
+
+def extract_public_emails(text: str, source_url: str) -> list[str]:
+    found: list[str] = []
+    seen: set[str] = set()
+    for match in EMAIL_RE.finditer(text):
+        email = match.group(0).lower().rstrip(".,;:")
+        if email in seen:
+            continue
+        local, _, domain = email.partition("@")
+        if not source_url or not domain:
+            continue
+        if local in {"noreply", "no-reply", "example", "test"}:
+            continue
+        if domain in {"example.com", "example.org", "users.noreply.github.com"}:
+            continue
+        context = text[max(0, match.start() - 100) : match.end() + 140]
+        if CONTACT_CONTEXT_RE.search(context):
+            seen.add(email)
+            found.append(email)
+    return found
+
+
+def fetch_registry_json(url: str) -> Any:
+    try:
+        return request_json(url, headers={"User-Agent": "jungle-outreach-agent/0.1"}, timeout=20)
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        return None
+
+
+def get_raw_repo_file(owner: str, repo: str, branch: str, path: str) -> str | None:
+    url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
+    try:
+        return fetch_text(url)
+    except (urllib.error.URLError, TimeoutError, ValueError):
+        return None
+
+
+def package_registry_metadata(owner: str, repo: str, branch: str) -> dict[str, list[str]]:
+    project_urls: set[str] = set()
+    package_pages: set[str] = set()
+    package_json = get_raw_repo_file(owner, repo, branch, "package.json")
+    if package_json:
+        try:
+            parsed = json.loads(package_json)
+            name = str(parsed.get("name") or "").strip()
+            if name:
+                package_pages.add(f"https://www.npmjs.com/package/{urllib.parse.quote(name)}")
+                npm = fetch_registry_json(f"https://registry.npmjs.org/{urllib.parse.quote(name)}") or {}
+                latest_tag = ((npm.get("dist-tags") or {}).get("latest")) if isinstance(npm, dict) else None
+                latest = (((npm.get("versions") or {}).get(latest_tag)) if latest_tag else None) if isinstance(npm, dict) else None
+                if isinstance(latest, dict):
+                    for value in [latest.get("homepage"), (latest.get("bugs") or {}).get("url")]:
+                        if isinstance(value, str) and value.strip():
+                            project_urls.add(value.strip())
+                homepage = parsed.get("homepage")
+                if isinstance(homepage, str) and homepage.strip():
+                    project_urls.add(homepage.strip())
+        except (ValueError, TypeError, AttributeError):
+            pass
+
+    pyproject = get_raw_repo_file(owner, repo, branch, "pyproject.toml")
+    if pyproject:
+        match = re.search(r'^\s*name\s*=\s*["\']([^"\']+)["\']', pyproject, re.M)
+        if match:
+            package_pages.add(f"https://pypi.org/project/{urllib.parse.quote(match.group(1))}/")
+            pypi = fetch_registry_json(f"https://pypi.org/pypi/{urllib.parse.quote(match.group(1))}/json") or {}
+            info = pypi.get("info") if isinstance(pypi, dict) else {}
+            if isinstance(info, dict):
+                for value in [info.get("home_page"), *(info.get("project_urls") or {}).values()]:
+                    if isinstance(value, str) and value.strip():
+                        project_urls.add(value.strip())
+
+    cargo = get_raw_repo_file(owner, repo, branch, "Cargo.toml")
+    if cargo:
+        match = re.search(r'^\s*name\s*=\s*["\']([^"\']+)["\']', cargo, re.M)
+        if match:
+            package_pages.add(f"https://crates.io/crates/{urllib.parse.quote(match.group(1))}")
+            crates = fetch_registry_json(f"https://crates.io/api/v1/crates/{urllib.parse.quote(match.group(1))}") or {}
+            crate = crates.get("crate") if isinstance(crates, dict) else {}
+            if isinstance(crate, dict):
+                for value in [crate.get("homepage"), crate.get("documentation"), crate.get("repository")]:
+                    if isinstance(value, str) and value.strip():
+                        project_urls.add(value.strip())
+
+    return {"project_urls": list(project_urls), "package_pages": list(package_pages)}
+
+
+def package_registry_contacts(package_pages: list[str]) -> list[dict[str, str]]:
+    contacts: list[dict[str, str]] = []
+    for url in package_pages:
+        try:
+            text = fetch_text(url)
+        except (urllib.error.URLError, TimeoutError, ValueError):
+            continue
+        for email in extract_public_emails(text, url):
+            contacts.append(
+                {
+                    "email": email,
+                    "source_url": url,
+                    "source_type": "package_page",
+                    "context": text[:5000],
+                }
+            )
+    return contacts
+
+
+QUERY_PACKS: dict[str, dict[str, list[str]]] = {
+    "mcp": {
+        "github": [
+            '"model context protocol" stars:>10',
+            'mcp agent tools stars:>8',
+            '"model context protocol" tools stars:>8',
+        ],
+        "registry": ["model context protocol", "mcp tools", "mcp agent"],
+    },
+    "workflow_automation": {
+        "github": [
+            "workflow automation agent stars:>20",
+            '"durable workflow" stars:>10',
+            '"background jobs" automation stars:>10',
+        ],
+        "registry": ["workflow automation agent", "durable workflow", "background jobs automation"],
+    },
+    "inference_training": {
+        "github": [
+            "inference training gpu stars:>20",
+            '"batch inference" training stars:>10',
+            'fine-tuning inference gpu stars:>10',
+        ],
+        "registry": ["vllm inference serving", "batch inference training", "fine tuning inference gpu"],
+    },
+    "agent_compute": {
+        "github": [
+            "agent runtime compute stars:>10",
+            "durable execution runtime stars:>10",
+            "worker queue artifacts retries stars:>8",
+        ],
+        "registry": ["batch jobs agent runtime", "durable execution runtime", "worker queue artifacts"],
+    },
+    "agent_framework": {
+        "github": [
+            '"AI agent" framework stars:>20',
+            "agent runtime stars:>15",
+            '"tool calling" agent stars:>10',
+        ],
+        "registry": ["ai agent framework", "agent runtime", "tool calling agent"],
+    },
+    "ai_infrastructure": {
+        "github": [
+            '"AI infrastructure" inference stars:>20',
+            "gpu orchestration inference stars:>15",
+            '"model serving" infrastructure stars:>10',
+        ],
+        "registry": ["ai infrastructure inference", "gpu orchestration inference", "model serving infrastructure"],
+    },
+}
+
+
+def parse_github_repo(value: str | None) -> tuple[str, str] | None:
+    if not value:
+        return None
+    normalized = value.strip().removeprefix("git+")
+    normalized = re.sub(r"\.git$", "", normalized, flags=re.I)
+    match = re.search(r"github\.com/([^/]+)/([^/#?]+)", normalized, re.I)
+    if not match:
+        return None
+    return match.group(1), match.group(2)
+
+
+def account_search_query(query: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"\bstars:\>[0-9]+\b| in:[^ ]+", "", query)).strip()
+
+
+def search_registry_projects(term: str) -> list[tuple[str, str]]:
+    candidates: list[tuple[str, str]] = []
+    npm = fetch_registry_json(f"https://registry.npmjs.org/-/v1/search?text={urllib.parse.quote(term)}&size=8") or {}
+    for item in npm.get("objects", []) if isinstance(npm, dict) else []:
+        links = ((item.get("package") or {}).get("links") or {}) if isinstance(item, dict) else {}
+        if isinstance(links, dict):
+            for value in links.values():
+                repo = parse_github_repo(value if isinstance(value, str) else None)
+                if repo:
+                    candidates.append(repo)
+    crates = fetch_registry_json(f"https://crates.io/api/v1/crates?page=1&per_page=8&q={urllib.parse.quote(term)}") or {}
+    for item in crates.get("crates", []) if isinstance(crates, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        for value in [item.get("repository"), item.get("homepage"), item.get("documentation")]:
+            repo = parse_github_repo(value if isinstance(value, str) else None)
+            if repo:
+                candidates.append(repo)
+    return list(dict.fromkeys(candidates))
+
+
+def github_profile(login: str) -> dict[str, Any] | None:
+    try:
+        return request_json(f"https://api.github.com/users/{urllib.parse.quote(login)}", headers=github_headers())
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        return None
+
+
+def github_readme(full_name: str, default_branch: str) -> str:
+    readme_url = f"https://raw.githubusercontent.com/{full_name}/{default_branch}/README.md"
+    try:
+        return fetch_text(readme_url, limit=100_000)
+    except (urllib.error.URLError, TimeoutError, ValueError):
+        return ""
+
+
+def repo_to_prospect(repo: dict[str, Any], category: str | None) -> dict[str, Any] | None:
+    full_name = str(repo.get("full_name") or "").strip()
+    owner_login = str((repo.get("owner") or {}).get("login") or "").strip()
+    if not full_name or not owner_login:
+        return None
+    default_branch = str(repo.get("default_branch") or "main")
+    profile = github_profile(owner_login) or {}
+    readme = github_readme(full_name, default_branch)
+    metadata = package_registry_metadata(owner_login, full_name.split("/", 1)[1], default_branch)
+
+    contacts: list[dict[str, str]] = []
+    profile_contact = profile_email_source(profile.get("email"), profile.get("html_url") or f"https://github.com/{owner_login}")
+    if profile_contact:
+        contacts.append(
+            {
+                "email": profile_contact,
+                "source_url": profile.get("html_url") or f"https://github.com/{owner_login}",
+                "source_type": "github_profile",
+                "context": "Public email field on the professional GitHub profile.",
+            }
         )
+    if readme:
+        for email in extract_public_emails(readme, f"https://github.com/{full_name}#readme"):
+            contacts.append(
+                {
+                    "email": email,
+                    "source_url": f"https://github.com/{full_name}#readme",
+                    "source_type": "repository_readme",
+                    "context": readme[:5000],
+                }
+            )
+    website_seeds = [
+        str(repo.get("homepage") or "").strip(),
+        str(profile.get("blog") or "").strip(),
+        *metadata["project_urls"],
+    ]
+    homepage_contacts, homepage_text = website_contacts(website_seeds)
+    contacts.extend(homepage_contacts)
+    contacts.extend(package_registry_contacts(metadata["package_pages"]))
+    best_contact = pick_best_contact(contacts)
+    if not best_contact:
+        return None
+
+    return normalize_prospect(
+        {
+            "name": profile.get("name") or owner_login,
+            "email": best_contact["email"],
+            "email_source_url": best_contact["source_url"],
+            "email_source_type": best_contact["source_type"],
+            "project": full_name,
+            "project_url": repo.get("html_url") or f"https://github.com/{full_name}",
+            "project_description": repo.get("description") or "",
+            "category": category or category_for(f"{repo.get('description', '')} {(readme or homepage_text)[:4000]}"),
+            "research_text": (readme or homepage_text)[:20_000],
+            "evidence_urls": [
+                best_contact["source_url"],
+                repo.get("html_url") or f"https://github.com/{full_name}",
+                f"https://github.com/{full_name}#readme",
+                *metadata["project_urls"],
+            ],
+            "stars": repo.get("stargazers_count") or 0,
+            "active": True,
+        }
+    )
+
+
+def discover_from_profiles(
+    queries: list[str], category: str | None, target: int, seen_projects: set[str], seen_profiles: set[str]
+) -> list[dict[str, Any]]:
+    prospects: list[dict[str, Any]] = []
+    for profile_type in ("user", "org"):
+        for query in queries:
+            if len(prospects) >= target:
+                return prospects
+            url = "https://api.github.com/search/users?" + urllib.parse.urlencode(
+                {"q": f"{account_search_query(query)} in:login,fullname,bio type:{profile_type}", "per_page": 10, "page": 1}
+            )
+            try:
+                result = request_json(url, headers=github_headers())
+            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+                return prospects
+            for user in result.get("items", []):
+                login = str(user.get("login") or "").strip()
+                if not login or login.lower() in seen_profiles:
+                    continue
+                seen_profiles.add(login.lower())
+                repos_url = (
+                    f"https://api.github.com/orgs/{urllib.parse.quote(login)}/repos"
+                    if profile_type == "org"
+                    else f"https://api.github.com/users/{urllib.parse.quote(login)}/repos"
+                )
+                try:
+                    repos = request_json(
+                        repos_url + "?" + urllib.parse.urlencode({"sort": "updated", "per_page": 10}),
+                        headers=github_headers(),
+                    )
+                except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+                    continue
+                for repo in repos if isinstance(repos, list) else []:
+                    full_name = str(repo.get("full_name") or "").strip().lower()
+                    if not full_name or repo.get("fork") or repo.get("archived") or full_name in seen_projects:
+                        continue
+                    seen_projects.add(full_name)
+                    prospect = repo_to_prospect(repo, category)
+                    if prospect:
+                        prospects.append(prospect)
+                        break
+    return prospects
+
+
+def discover_from_github(target: int, category: str | None) -> list[dict[str, Any]]:
+    pack = QUERY_PACKS.get(
+        category or "",
+        {"github": ["agent runtime inference workflow stars:>20"], "registry": ["agent runtime inference workflow"]},
+    )
+    queries = pack["github"]
+    prospects: list[dict[str, Any]] = []
+    seen_projects: set[str] = set()
+    seen_profiles: set[str] = set()
+    for query in queries:
+        if len(prospects) >= target:
+            break
+        for page in (1, 2):
+            if len(prospects) >= target:
+                break
+            url = "https://api.github.com/search/repositories?" + urllib.parse.urlencode(
+                {"q": f"{query} archived:false fork:false", "sort": "updated", "per_page": 30, "page": page}
+            )
+            try:
+                result = request_json(url, headers=github_headers())
+            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+                LOG.warning("GitHub discovery unavailable: %s", error)
+                return prospects
+
+            for repo in result.get("items", []):
+                if len(prospects) >= target:
+                    break
+                full_name = str(repo.get("full_name") or "").strip()
+                if not full_name or full_name.lower() in seen_projects:
+                    continue
+                seen_projects.add(full_name.lower())
+                prospect = repo_to_prospect(repo, category)
+                if prospect:
+                    prospects.append(prospect)
+        if len(prospects) >= target:
+            break
+        for term in pack["registry"]:
+            if len(prospects) >= target:
+                break
+            for owner, repo_name in search_registry_projects(term):
+                full_name = f"{owner}/{repo_name}".lower()
+                if full_name in seen_projects:
+                    continue
+                try:
+                    repo = request_json(
+                        f"https://api.github.com/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo_name)}",
+                        headers=github_headers(),
+                    )
+                except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+                    continue
+                seen_projects.add(full_name)
+                prospect = repo_to_prospect(repo, category)
+                if prospect:
+                    prospects.append(prospect)
+                if len(prospects) >= target:
+                    break
+    if len(prospects) < target:
+        prospects.extend(discover_from_profiles(queries, category, target - len(prospects), seen_projects, seen_profiles))
     return [prospect for prospect in prospects if prospect]
 
 

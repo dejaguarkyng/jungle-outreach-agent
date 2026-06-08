@@ -54,7 +54,7 @@ export class OutreachService {
         projectKey: candidate.projectKey,
         projectDescription: candidate.projectDescription,
         category: candidate.category,
-        confidenceScore: candidate.contact.sourceType === "github_profile" ? 0.95 : 0.85,
+        confidenceScore: candidate.contactQuality / 100,
       });
       if (result.created) {
         found++;

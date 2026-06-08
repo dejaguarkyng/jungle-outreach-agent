@@ -17,7 +17,12 @@ const rejectedDomains = new Set([
 export type PublicEmailEvidence = {
   email: string;
   sourceUrl: string;
-  sourceType: "github_profile" | "repository_readme" | "official_website";
+  sourceType:
+    | "github_profile"
+    | "repository_readme"
+    | "official_website"
+    | "project_docs"
+    | "package_page";
   context: string;
 };
 
@@ -56,7 +61,7 @@ export function validateProfileEmail(
 export function extractPublicEmails(
   text: string,
   sourceUrl: string,
-  sourceType: "repository_readme" | "official_website",
+  sourceType: "repository_readme" | "official_website" | "project_docs" | "package_page",
 ): PublicEmailEvidence[] {
   const matches = [...text.matchAll(emailPattern)];
   const seen = new Set<string>();
