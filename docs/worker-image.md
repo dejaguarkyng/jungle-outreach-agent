@@ -27,11 +27,11 @@ storage. Pin both the Ollama base image and model digest for reproducibility.
 ## Publish
 
 ```bash
-docker login ghcr.io
-IMAGE=ghcr.io/jungle-grid/outreach-qwen-worker:v0.1.0 \
+docker login
+IMAGE=junglegrid/outreach-qwen-worker:v0.1.0 \
   ./scripts/build-worker-image.sh
-IMAGE=ghcr.io/jungle-grid/outreach-qwen-worker:v0.1.0 \
+IMAGE=junglegrid/outreach-qwen-worker:v0.1.0 \
   ./scripts/push-worker-image.sh
 ```
 
-Release tags publish the version tag and `latest` through GitHub Actions.
+GitHub Actions publishes `latest`, tag refs, and commit SHA tags to Docker Hub.

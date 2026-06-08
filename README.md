@@ -24,7 +24,7 @@ hosted model account.
 - Next.js dashboard, SQLite persistence, run logs, and artifact views
 - Internal draft review plus manually approved ZeptoMail sending
 - Suppression and blocklist controls before any send attempt
-- Docker, GHCR publishing, CI, release automation, and sample dry-run data
+- Docker, Docker Hub publishing, CI, release automation, and sample dry-run data
 
 ## 4. Safety principles
 
@@ -162,7 +162,7 @@ Add release screenshots under `docs/screenshots/` and link them here.
 ```
 
 The release image is
-`ghcr.io/jungle-grid/outreach-qwen-worker:latest`. Two supported strategies are
+`junglegrid/outreach-qwen-worker:latest`. Two supported strategies are
 documented in [docs/worker-image.md](docs/worker-image.md): pull the model at job
 start, or publish a larger image with the model preloaded.
 
