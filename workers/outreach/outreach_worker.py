@@ -986,7 +986,7 @@ def load_seed(input_path: Path | None) -> list[dict[str, Any]]:
 
 def github_headers() -> dict[str, str]:
     headers = {
-        "User-Agent": "jungle-outreach-agent/0.1",
+        "User-Agent": "openline/0.1",
         "Accept": "application/vnd.github+json",
     }
     token = os.getenv("GITHUB_TOKEN", "").strip()
@@ -996,7 +996,7 @@ def github_headers() -> dict[str, str]:
 
 
 def fetch_text(url: str, timeout: int = 20, limit: int = 120_000) -> str:
-    request = urllib.request.Request(url, headers={"User-Agent": "jungle-outreach-agent/0.1"})
+    request = urllib.request.Request(url, headers={"User-Agent": "openline/0.1"})
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return response.read(limit).decode("utf-8", errors="replace")
 
@@ -1114,7 +1114,7 @@ def extract_public_emails(text: str, source_url: str) -> list[str]:
 
 def fetch_registry_json(url: str) -> Any:
     try:
-        return request_json(url, headers={"User-Agent": "jungle-outreach-agent/0.1"}, timeout=20)
+        return request_json(url, headers={"User-Agent": "openline/0.1"}, timeout=20)
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
         return None
 

@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "jungle-outreach-agent"
+name = "openline"
 version = "0.1.0"
-description = "Open-source Jungle Grid outreach research and draft agent"
+description = "Open-source, self-hostable prospect intelligence and outreach research powered by Jungle Grid"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

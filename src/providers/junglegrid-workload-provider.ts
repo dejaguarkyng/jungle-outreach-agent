@@ -319,7 +319,7 @@ export class JungleGridWorkloadProvider {
       },
       expected_artifacts: requiredArtifactNames.map((name) => `/workspace/artifacts/${name}`),
       metadata: {
-        application: "jungle-outreach-agent",
+        application: "openline",
         mode,
         execution_backend: "jungle_grid",
         schema_version: "1.0",

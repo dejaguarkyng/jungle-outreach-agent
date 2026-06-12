@@ -258,7 +258,7 @@ def _request_json(url: str, timeout: int, headers: dict[str, str] | None = None)
         url,
         headers={
             "Accept": "application/json",
-            "User-Agent": "jungle-outreach-agent/0.1",
+            "User-Agent": "openline/0.1",
             **(headers or {}),
         },
     )
@@ -271,7 +271,7 @@ def _request_text(url: str, timeout: int, headers: dict[str, str] | None = None)
         url,
         headers={
             "Accept": "application/xml,text/xml,text/html,text/plain,application/json",
-            "User-Agent": "jungle-outreach-agent/0.1",
+            "User-Agent": "openline/0.1",
             **(headers or {}),
         },
     )

@@ -1,11 +1,11 @@
-# Jungle Outreach Agent
+# Openline
 
-## 1. What is Jungle Outreach Agent?
+## 1. What is Openline?
 
-`jungle-outreach-agent` is an open-source, self-hostable prospect intelligence
-and outreach research system powered by Jungle Grid. Users control campaigns,
-source credentials, evidence, contacts, drafts, and exports. Jungle Grid
-provides durable AI-job execution, batching, retries, logs, state, and artifacts.
+Openline is an open-source, self-hostable prospect intelligence and outreach
+research system powered by Jungle Grid. Users control campaigns, source
+credentials, evidence, contacts, drafts, and exports. Jungle Grid provides
+durable AI-job execution, batching, retries, logs, state, and artifacts.
 
 ## 2. Why Jungle Grid?
 

@@ -1,10 +1,10 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Activity,
-  FlaskConical,
   LayoutDashboard,
   Mail,
   Play,
@@ -30,12 +30,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen lg:grid lg:grid-cols-[224px_minmax(0,1fr)]">
       <aside className="border-b bg-black/25 lg:sticky lg:top-0 lg:h-screen lg:border-b-0 lg:border-r">
         <div className="flex h-16 items-center gap-3 border-b px-5">
-          <div className="grid h-8 w-8 place-items-center rounded-md border border-green-500/30 bg-green-500/10">
-            <FlaskConical className="h-4 w-4 text-green-300" />
+          <div className="overflow-hidden rounded-lg bg-white">
+            <Image src="/openline-logo.png" alt="Openline" width={32} height={32} priority />
           </div>
           <div>
-            <p className="text-sm font-semibold">Jungle Grid</p>
-            <p className="text-xs text-muted-foreground">Outreach drafts</p>
+            <p className="text-sm font-semibold">Openline</p>
+            <p className="text-xs text-muted-foreground">Prospect intelligence</p>
           </div>
         </div>
         <nav className="flex gap-1 overflow-x-auto p-3 lg:block lg:space-y-1">

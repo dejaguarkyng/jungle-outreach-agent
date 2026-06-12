@@ -233,7 +233,7 @@ export class ZeptoMailService {
       toName: "Jungle Grid operator",
       subject: "Jungle Grid ZeptoMail manual-send test",
       body: [
-        "Hi, this is a ZeptoMail configuration test for the Jungle Outreach Agent dashboard.",
+        "Hi, this is a ZeptoMail configuration test for the Openline dashboard.",
         "It verifies the send-mail token, verified sender, reply-to address, and plain-text payload.",
         "The application keeps research drafts internal until a human approves them, then sends only after an explicit click.",
         "It uses no extra resources or scheduled automation in this test before operators enable the manual approval mode for compliant transactional workflows.",
