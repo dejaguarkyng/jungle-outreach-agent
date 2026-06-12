@@ -1,22 +1,88 @@
 max_age_days: 14
 
-adapters:
-  reddit:
-    enabled: true
-    limit_per_query: 15
-    user_agent: "jungle-grid-leads/0.2"
-  hackernews:
-    enabled: true
-    limit_per_query: 15
+sources:
   github:
     enabled: true
-    limit_per_query: 10
-  x:
-    enabled: false
-    limit_per_query: 10
+    access: ["api"]
+    required_credentials: ["GITHUB_TOKEN"]
+    optional_credentials: true
+    rate_limit_per_minute: 30
+  official_website:
+    enabled: true
+    access: ["public_webpage"]
+    respect_robots: true
+  news_rss:
+    enabled: true
+    access: ["feed", "api", "public_webpage"]
+    why_now_signal: true
+  huggingface:
+    enabled: true
+    access: ["api", "public_webpage"]
+  hackernews:
+    enabled: true
+    access: ["api"]
+    focus: ["show_hn", "technical_pain"]
+  reddit:
+    enabled: true
+    access: ["api"]
+    required_credentials: ["REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET"]
+    stores_minimal_excerpts: true
+  gitlab:
+    enabled: true
+    access: ["api"]
+  npm:
+    enabled: true
+    access: ["api"]
+    reject_generic_packages_without_workload_evidence: true
+  pypi:
+    enabled: true
+    access: ["api"]
+    reject_generic_packages_without_workload_evidence: true
+  docker_hub:
+    enabled: true
+    access: ["api"]
+  stack_exchange:
+    enabled: true
+    access: ["api"]
+    do_not_target_question_authors: true
+  youtube:
+    enabled: true
+    access: ["api"]
+    required_credentials: ["YOUTUBE_API_KEY"]
+  arxiv:
+    enabled: true
+    access: ["api", "feed"]
+  job_listings:
+    enabled: true
+    access: ["api", "feed", "public_webpage"]
+  accelerators:
+    enabled: true
+    access: ["api", "feed", "public_webpage"]
+  open_collective:
+    enabled: true
+    access: ["api"]
+
+restricted_sources:
   discord:
     enabled: false
-    limit_per_query: 10
+    required_credentials: ["DISCORD_BOT_TOKEN"]
+    permissions: ["authorized_bot_installed", "visible_channels_only", "no_dms"]
+  slack:
+    enabled: false
+    required_credentials: ["SLACK_BOT_TOKEN"]
+    permissions: ["authorized_app_installed", "visible_channels_only", "no_dms"]
+  linkedin:
+    enabled: false
+    required_credentials: ["LINKEDIN_ENRICHMENT_API_KEY"]
+    permissions: ["approved_api_or_user_supplied_data", "no_bulk_profile_scraping"]
+  facebook_page:
+    enabled: false
+    required_credentials: ["META_ACCESS_TOKEN"]
+    permissions: ["approved_meta_api_or_user_supplied_urls", "public_pages_only"]
+  product_hunt:
+    enabled: false
+    required_credentials: ["PRODUCT_HUNT_TOKEN"]
+    permissions: ["approved_api_and_commercial_permission"]
 
 queries:
   provider_pain:

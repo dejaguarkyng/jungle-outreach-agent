@@ -2,10 +2,10 @@
 
 ## 1. What is Jungle Outreach Agent?
 
-`jungle-outreach-agent` is an open-source research and outreach draft agent for
-Jungle Grid. It discovers public professional contacts, records evidence,
-scores fit, generates short drafts, validates artifacts, stores internal drafts,
-and sends through ZeptoMail only after explicit manual approval.
+`jungle-outreach-agent` is an open-source, self-hostable prospect intelligence
+and outreach research system powered by Jungle Grid. Users control campaigns,
+source credentials, evidence, contacts, drafts, and exports. Jungle Grid
+provides durable AI-job execution, batching, retries, logs, state, and artifacts.
 
 ## 2. Why Jungle Grid?
 
@@ -16,8 +16,11 @@ hosted model account.
 
 ## 3. Features
 
-- Three modes: `local-template`, `junglegrid-template`, and `junglegrid-qwen`
-- Public GitHub/project research with email provenance
+- Three backward-compatible mode names, all executed through Jungle Grid
+- Configurable public-source adapter registry with GitHub, websites, feeds,
+  package registries, community/news sources, jobs, research, funding, and
+  restricted enrichment sources disabled unless authorized
+- Public project research with email provenance
 - Evidence-bound fit scoring and personalization
 - Qwen through Ollama inside the worker
 - Strict JSON artifact contracts and backend revalidation
@@ -31,7 +34,10 @@ hosted model account.
 - Publicly listed professional email addresses only
 - No guessed, leaked, hidden, brokered, or unrelated commit addresses
 - Every personalization claim requires public evidence
-- Draft bodies are 60–80 words with exactly one link: https://junglegrid.dev
+- Draft bodies are 70-140 words with exactly one link: https://junglegrid.dev
+- Semantic validation statuses are `send_ready`, `manual_review_required`,
+  `regeneration_required`, and `excluded`; fallback drafts are never
+  `send_ready`
 - No attachments, tracking, pixels, calendar links, or automatic sending
 - Internal drafts are stored only after artifact validation
 - ZeptoMail sending is disabled by default and requires a manual dashboard click
@@ -47,7 +53,7 @@ Next.js dashboard/API
   -> Jungle Grid REST API
   -> outreach worker
   -> public research + scoring
-  -> Qwen/Ollama or templates
+  -> Qwen/Ollama or deterministic templates inside the managed workload
   -> /workspace/artifacts/*.json
   -> backend validation + persistence
   -> internal draft review database
@@ -60,17 +66,23 @@ ZeptoMail credentials are not available inside the worker. See
 ## 6. Quickstart
 
 ```bash
-./scripts/setup.sh
+npm run setup
 npm run dev
 ```
 
-Open `http://localhost:3000`. The default configuration is safe for local dry
-runs, but production mode requires the manual setup listed below.
+Open `http://localhost:3000`. The UI can be inspected without credentials, but
+campaign execution requires a working `JUNGLEGRID_API_KEY`.
 
-## 7. Running locally
+`npm run setup` installs dependencies, prompts for the API key when run in a
+terminal, verifies API reachability, estimates and submits a one-item template
+workload, waits for completion, and checks its events, logs, and six artifacts.
+The verification job uses Jungle Grid capacity and may incur a small charge.
+Create a Jungle Grid account at [junglegrid.dev](https://junglegrid.dev), issue
+an API key from the account dashboard, and provide it when setup prompts.
+
+## 7. Development fixtures
 
 ```bash
-npm run outreach:run:local -- --count 2
 python3 workers/outreach/outreach_worker.py \
   --job full-run-template \
   --target 2 \
@@ -78,8 +90,9 @@ python3 workers/outreach/outreach_worker.py \
   --input ./examples/sample-worker-input.json
 ```
 
-Local template mode requires no Jungle Grid credits and no model runtime. See
-[docs/local-development.md](docs/local-development.md).
+Direct worker execution is only for deterministic fixture and image testing.
+It is not production eligible. The legacy `outreach:run:local` command remains
+for CLI compatibility but now submits the Qwen workload through Jungle Grid.
 
 ## 8. Running on Jungle Grid
 
@@ -99,12 +112,34 @@ npm run outreach:test:junglegrid:qwen
 npm run outreach:run:junglegrid:qwen -- --count 17
 ```
 
-The first command performs an estimate only. The full run uses
-`qwen2.5:3b` by default. If Ollama or the model is unavailable, the worker uses
-templates only when `LLM_FALLBACK_MODE=template`; fallback is recorded in logs
-and `run_summary.json`.
+The first command performs an estimate only. The full run uses `qwen2.5:3b` by
+default. Production submissions force `LLM_FALLBACK_MODE=disabled`: a failed
+model workload fails or degrades explicitly and never silently switches to a
+local or external provider. Worker-only fixture tests may exercise fallback
+reporting, but those outputs are not production eligible.
 
-## 10. ZeptoMail setup
+## 10. Source adapters
+
+`config/sources.yaml` controls public discovery adapters. Core adapters use
+public APIs, feeds, or public webpages where available; adapter hits are
+reported as `source_signals` in `run_summary.json`. A source signal becomes a
+prospect only when it resolves to an official repository or public official
+site with acceptable contact provenance. Restricted sources remain disabled
+unless the required authorized app/API configuration is present. Use
+`OUTREACH_ADAPTER_FIXTURES=true` for deterministic adapter fixtures in local
+worker testing. See [docs/source-adapters.md](docs/source-adapters.md) for
+configuration, access constraints, error behavior, and adding an adapter.
+
+## Campaigns
+
+Campaign files under `config/campaigns/` configure the offer, ICP, qualification
+signals, scoring interpretation, messaging, and per-stage model choices. The
+manual-run screen can select any valid campaign. The included
+`generic-saas.json` example targets release observability rather than AI
+infrastructure, while still executing through Jungle Grid. See
+[docs/campaign-configuration.md](docs/campaign-configuration.md).
+
+## 11. ZeptoMail setup
 
 Configure a ZeptoMail send-mail token, verified sender domain, sender address,
 reply-to address, and a test recipient. `ZEPTOMAIL_API_BASE` is required and
@@ -113,7 +148,7 @@ configurable because account regions can differ. Sending remains disabled until
 See [docs/zeptomail-setup.md](docs/zeptomail-setup.md) and
 [docs/zeptomail-implementation-notes.md](docs/zeptomail-implementation-notes.md).
 
-## 11. Frontend dashboard
+## 12. Frontend dashboard
 
 The dashboard includes:
 
@@ -127,7 +162,7 @@ The dashboard includes:
 
 Add release screenshots under `docs/screenshots/` and link them here.
 
-## 12. CLI commands
+## 13. CLI commands
 
 | Command | Purpose |
 | --- | --- |
@@ -138,7 +173,7 @@ Add release screenshots under `docs/screenshots/` and link them here.
 | `npm run typecheck` | Run TypeScript without emitting files |
 | `npm run test` | Run TypeScript unit and UI tests |
 | `npm run test:python` | Run worker smoke tests |
-| `npm run outreach:run:local` | Run local research and deterministic templates |
+| `npm run outreach:run:local` | Legacy alias; submit the Qwen pipeline through Jungle Grid |
 | `npm run outreach:run:junglegrid` | Run the template worker on Jungle Grid |
 | `npm run outreach:run:junglegrid:qwen` | Run the Qwen/Ollama worker on Jungle Grid |
 | `npm run outreach:test:junglegrid:qwen` | Estimate the Qwen worker contract without starting a job |
@@ -153,7 +188,7 @@ Add release screenshots under `docs/screenshots/` and link them here.
 | `npm run outreach:jg:logs -- --job-id ID` | Print Jungle Grid job logs |
 | `npm run outreach:jg:artifacts -- --job-id ID` | List managed job artifacts |
 
-## 13. Worker image
+## 14. Worker image
 
 ```bash
 ./scripts/build-worker-image.sh
@@ -166,24 +201,24 @@ The release image is
 documented in [docs/worker-image.md](docs/worker-image.md): pull the model at job
 start, or publish a larger image with the model preloaded.
 
-## 14. Releases
+## 15. Releases
 
 The project uses semantic versioning and Keep a Changelog. Planned milestones
 are `v0.1.0` MVP, `v0.2.0` worker mode, `v0.3.0` Qwen mode, and `v1.0.0`
 stable. See [docs/releasing.md](docs/releasing.md).
 
-## 15. Contributing
+## 16. Contributing
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) and
 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Use `dev` for active integration and
 feature branches for pull requests.
 
-## 16. Security
+## 17. Security
 
 Report validation bypasses, token exposure, private contact data, or any email
 send path privately as described in [SECURITY.md](SECURITY.md).
 
-## 17. License
+## 18. License
 
 Apache-2.0. It provides permissive reuse plus an explicit patent grant, which
 is useful for a public infrastructure example intended for commercial and
@@ -203,3 +238,35 @@ Optional:
 - A GitHub token for higher public API rate limits
 
 No paid hosted model provider credential is required or supported.
+
+## Execution persistence
+
+Each managed run stores its estimate, Jungle Grid job ID, workspace and campaign
+IDs, pipeline stage, execution phase, timestamps, retry count, log cursor,
+artifacts, workload metadata, and failure reason. Restarting a run with an
+already-submitted job resumes polling that job instead of submitting a duplicate.
+Run summaries report `executionBackend: "jungle_grid"` and keep local and
+external AI fallback counts at zero.
+
+Active jobs are resumed automatically after a server restart. Failed and
+timed-out attempts are retried through Jungle Grid up to the configured bound;
+each attempt remains visible in the run detail page. Operators can cancel an
+active remote job from the same page.
+
+For Qwen campaigns, Jungle Grid also executes batched semantic research,
+qualification, score explanations, angle selection, draft generation, and
+semantic draft validation. Production ingestion fails closed if an applicable
+semantic stage is missing or unsuccessful.
+
+## Privacy and retention
+
+Only public or explicitly authorized source data may be collected. Restricted
+adapters do not process DMs, hidden channels, private groups, member lists, or
+unapproved profile scraping. Contacts must retain their public source URL and
+person-project relationship evidence. Source errors redact configured secrets.
+
+Set `DATA_RETENTION_DAYS` to prune terminal runs, their dependent events and
+execution records, stale prospects and dependent research/drafts, and old audit
+logs at application startup. `0` disables automatic pruning. See
+[docs/migration.md](docs/migration.md) for artifact and stored-data
+compatibility notes.

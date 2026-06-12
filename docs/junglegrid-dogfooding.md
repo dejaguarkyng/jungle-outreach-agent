@@ -4,14 +4,15 @@ The application treats outreach as a real agentic batch workload rather than a
 single text-generation call.
 
 Jungle Grid is responsible for discovery, public research, fit scoring,
-Qwen/Ollama execution, validation, logs, fallback reporting, and managed
+Qwen/Ollama execution, validation, logs, failure reporting, and managed
 artifacts. The backend submits jobs through `/v1/jobs`, monitors lifecycle
 state, reads logs, and downloads artifacts through signed URLs.
 
 `junglegrid-template` proves the orchestration and artifact path without model
-startup. `junglegrid-qwen` adds local model execution inside the same worker.
-This separation makes startup cost, model fallback, run duration, and output
-quality visible in run records.
+startup. `junglegrid-qwen` runs the model inside the managed worker. The legacy
+`local-template` mode name is mapped to the managed Qwen workload and cannot
+bypass Jungle Grid. Production submissions disable template fallback so model
+failure, run duration, and output quality remain explicit in run records.
 
 The worker command is:
 

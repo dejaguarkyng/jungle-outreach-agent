@@ -88,7 +88,7 @@ function createValidatedDraft(repository = new OutreachRepository()) {
     links: ["https://junglegrid.dev"],
     evidenceUrls: ["https://acme.dev/contact", "https://acme.dev/agent-runtime"],
     personalizationClaims: ["durable job queue keeps logs, retries, and artifacts together"],
-    validationStatus: "passed",
+    validationStatus: "send_ready",
     validationErrors: [],
   });
   return { prospect, draft };

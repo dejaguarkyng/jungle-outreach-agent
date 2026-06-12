@@ -12,6 +12,13 @@ const env = {
   JUNGLEGRID_REGISTRY_CREDENTIAL_ID: "regcred-test",
   JUNGLEGRID_POLL_INTERVAL_MS: 1,
   JUNGLEGRID_JOB_TIMEOUT_MS: 100,
+  JUNGLEGRID_RESEARCH_BATCH_SIZE: 20,
+  JUNGLEGRID_SCORING_BATCH_SIZE: 25,
+  JUNGLEGRID_DRAFTING_BATCH_SIZE: 10,
+  JUNGLEGRID_VALIDATION_BATCH_SIZE: 20,
+  JUNGLEGRID_MAXIMUM_ACTIVE_JOBS: 4,
+  JUNGLEGRID_MAXIMUM_ATTEMPTS: 3,
+  JUNGLEGRID_RETRY_BACKOFF_SECONDS: 10,
   OLLAMA_MODEL: "qwen2.5:3b",
   OLLAMA_HOST: "http://127.0.0.1:11434",
   USE_LOCAL_LLM: true,
@@ -24,6 +31,7 @@ const env = {
   ZEPTOMAIL_TEST_RECIPIENT: undefined,
   EMAIL_SEND_MODE: "disabled",
   DATABASE_URL: ":memory:",
+  DATA_RETENTION_DAYS: 0,
   DAILY_TARGET: 17,
   JUNGLEGRID_SITE: "https://junglegrid.dev",
   FIT_SCORE_THRESHOLD: 70,
@@ -46,14 +54,42 @@ describe("Jungle Grid provider", () => {
     expect(payload.command).toContain("full-run-qwen");
     expect(payload.expected_artifacts).toHaveLength(6);
     expect(payload.environment.OLLAMA_MODEL).toBe("qwen2.5:3b");
+    expect(payload.environment.LLM_FALLBACK_MODE).toBe("disabled");
     expect(payload.requires_gpu).toBe(true);
     expect(payload.gpu_count).toBe(1);
     expect(payload.optimize_for).toBe("cost");
     expect(payload.registry_credential_id).toBe("regcred-test");
+    const contract = JSON.parse(payload.environment.OUTREACH_JOB_CONTRACT);
+    expect(contract.schema_version).toBe("1.0");
+    expect(contract.pipeline_stages).toContain("semantic_validation");
+    expect(contract.execution.batching.research_batch_size).toBe(20);
+    expect(contract.execution.concurrency.maximum_active_jobs).toBe(4);
+    expect(contract.execution.retries.maximum_attempts).toBe(3);
   });
 
-  it("never accepts local mode for remote submission", async () => {
-    const provider = new JungleGridWorkloadProvider(env, vi.fn());
-    await expect(provider.submit("local-template", 1)).rejects.toThrow(/does not submit/);
+  it("treats the legacy local mode as a Jungle Grid-backed Qwen run", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ job_id: "job-legacy", status: "queued" }), { status: 202 }),
+    );
+    const provider = new JungleGridWorkloadProvider(env, fetchMock);
+    await provider.submit("local-template", 1);
+    const payload = JSON.parse(String(fetchMock.mock.calls[0][1].body));
+    expect(payload.command).toContain("full-run-qwen");
+    expect(payload.metadata.execution_backend).toBe("jungle_grid");
+  });
+
+  it("retrieves events and cancels through the job lifecycle API", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ events: [{ phase: "queued" }] }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const provider = new JungleGridWorkloadProvider(env, fetchMock);
+    await expect(provider.getEvents("job-1")).resolves.toEqual([{ phase: "queued" }]);
+    await expect(provider.cancelJob("job-1")).resolves.toBeUndefined();
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      "https://api.junglegrid.dev/v1/jobs/job-1/cancel",
+    );
   });
 });

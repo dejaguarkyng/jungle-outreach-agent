@@ -5,6 +5,7 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { formatDate } from "@/src/lib/utils";
 import { RunArtifactActions } from "@/components/run-artifact-actions";
+import { RunCancelButton } from "@/components/run-cancel-button";
 
 export const dynamic = "force-dynamic";
 
@@ -44,6 +45,11 @@ export default async function RunDetailPage({ params }: { params: Promise<{ id: 
               <p className="mt-1 font-mono text-sm">{detail.run.junglegridJobId}</p>
             </div>
             <RunArtifactActions runId={detail.run.id} />
+            {!["completed", "failed", "cancelled", "timed_out", "blocked"].includes(
+              detail.run.phase,
+            ) ? (
+              <RunCancelButton runId={detail.run.id} />
+            ) : null}
             <div className="flex flex-wrap gap-2">
               {detail.run.artifacts.map((artifact) => (
                 <Badge key={artifact}>{artifact}</Badge>
@@ -51,6 +57,41 @@ export default async function RunDetailPage({ params }: { params: Promise<{ id: 
             </div>
           </Card>
         ) : null}
+        <Card className="p-5">
+          <h2 className="text-sm font-semibold">Jungle Grid attempts</h2>
+          <div className="mt-4 divide-y">
+            {detail.executions.map((execution) => (
+              <div key={execution.id} className="grid gap-1 py-3 text-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-mono text-xs">
+                    {execution.junglegridJobId ?? "not submitted"}
+                  </span>
+                  <Badge
+                    tone={
+                      ["failed", "timed_out", "cancelled"].includes(execution.executionPhase)
+                        ? "red"
+                        : "neutral"
+                    }
+                  >
+                    {execution.executionPhase.replaceAll("_", " ")}
+                  </Badge>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Attempt {execution.retryCount + 1} ·{" "}
+                  {execution.pipelineStage.replaceAll("_", " ")}
+                </p>
+                {execution.failureReason ? (
+                  <p className="text-xs text-red-300">{execution.failureReason}</p>
+                ) : null}
+              </div>
+            ))}
+            {detail.executions.length === 0 ? (
+              <p className="py-4 text-sm text-muted-foreground">
+                No managed attempts recorded.
+              </p>
+            ) : null}
+          </div>
+        </Card>
         <Card className="p-5">
           <h2 className="text-sm font-semibold">Lifecycle log</h2>
           <div className="mt-4 divide-y">

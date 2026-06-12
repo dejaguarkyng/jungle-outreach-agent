@@ -93,7 +93,7 @@ export function SettingsForm({
           </Field>
           <Field label="Execution mode" error={form.formState.errors.mode?.message}>
             <select className="h-9 rounded-md border bg-black/20 px-3 text-sm" {...form.register("mode")}>
-              <option value="local-template">Local template</option>
+              <option value="local-template">Legacy alias (Jungle Grid Qwen)</option>
               <option value="junglegrid-template">Jungle Grid template</option>
               <option value="junglegrid-qwen">Jungle Grid Qwen</option>
             </select>

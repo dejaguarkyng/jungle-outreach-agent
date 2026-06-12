@@ -42,6 +42,16 @@ function relevanceFor(prospect: Prospect): string {
       "open-source AI tools can delegate durable compute jobs while retaining logs, retries, and artifacts",
     agent_compute:
       "agents that initiate real jobs need a durable boundary for compute, status, logs, retries, and artifacts",
+    developer_tool:
+      "the configured campaign can address operational needs documented by this developer tool",
+    data_platform:
+      "the configured campaign can address workload and operating signals documented by this data platform",
+    security:
+      "the configured campaign can address security workflow signals documented by this project",
+    saas:
+      "the configured campaign can address production SaaS operating signals documented by this project",
+    other:
+      "the configured campaign can address the project signals captured in public evidence",
   };
   return byCategory[prospect.category];
 }

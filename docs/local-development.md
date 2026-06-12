@@ -10,13 +10,17 @@
 ## Setup
 
 ```bash
-./scripts/setup.sh
+npm run setup
 npm run dev
 ```
 
-Use `JUNGLEGRID_MODE=local-template` and `DRY_RUN=true` when contributing
-without Jungle Grid credits. Local mode uses deterministic templates and does
-not require Ollama.
+Setup submits a one-item Jungle Grid template workload and verifies status,
+events, logs, and artifacts. It may incur a small Jungle Grid charge.
+
+The dashboard and deterministic tests can run without Jungle Grid credentials.
+Campaign execution cannot: every `runOutreach` mode requires
+`JUNGLEGRID_API_KEY`. The legacy `local-template` mode name is mapped to a
+Jungle Grid Qwen workload so old clients cannot bypass the required backend.
 
 Run the worker directly:
 
@@ -27,6 +31,9 @@ python3 workers/outreach/outreach_worker.py \
   --output ./artifacts \
   --input ./examples/sample-worker-input.json
 ```
+
+Direct worker runs are development simulations only and are not production
+eligible. They do not represent the application execution path.
 
 Before opening a pull request:
 

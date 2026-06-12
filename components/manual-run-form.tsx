@@ -23,12 +23,15 @@ const schema = z.object({
   category: z.enum(["", ...prospectCategories]),
   scoreThreshold: z.coerce.number().int().min(0).max(100),
   dryRun: z.boolean(),
+  campaignId: z.string().min(1),
 });
 type Values = z.infer<typeof schema>;
 
 export function ManualRunForm({
   defaults,
+  campaigns,
 }: {
+  campaigns: Array<{ id: string; name: string; offer: string }>;
   defaults: {
     targetCount: number;
     scoreThreshold: number;
@@ -46,6 +49,7 @@ export function ManualRunForm({
       ...defaults,
       mode: defaults.mode ?? "junglegrid-qwen",
       category: "",
+      campaignId: campaigns[0]?.id ?? "jungle-grid",
     },
   });
 
@@ -97,6 +101,15 @@ export function ManualRunForm({
               ))}
             </select>
           </Field>
+          <Field label="Campaign" error={form.formState.errors.campaignId?.message}>
+            <select className="h-9 rounded-md border bg-black/20 px-3 text-sm" {...form.register("campaignId")}>
+              {campaigns.map((campaign) => (
+                <option key={campaign.id} value={campaign.id}>
+                  {campaign.name}
+                </option>
+              ))}
+            </select>
+          </Field>
           <Field label="Category focus" error={form.formState.errors.category?.message}>
             <select className="h-9 rounded-md border bg-black/20 px-3 text-sm" {...form.register("category")}>
               <option value="">All target categories</option>
@@ -138,6 +151,7 @@ export function ManualRunForm({
               <div><dt className="text-muted-foreground">Category</dt><dd>{values.category || "All"}</dd></div>
               <div><dt className="text-muted-foreground">Mode</dt><dd>{values.dryRun ? "Dry run" : "Draft creation"}</dd></div>
               <div><dt className="text-muted-foreground">Execution</dt><dd>{values.mode}</dd></div>
+              <div><dt className="text-muted-foreground">Campaign</dt><dd>{campaigns.find((campaign) => campaign.id === values.campaignId)?.offer ?? values.campaignId}</dd></div>
             </dl>
             <div className="mt-5 flex gap-2">
               <Button onClick={form.handleSubmit(start)}>Confirm and start</Button>

@@ -51,7 +51,7 @@ export async function PATCH(
       links: extractLinks(`${payload.subject}\n${payload.body}`),
       evidenceUrls: current.evidenceUrls,
       personalizationClaims: current.personalizationClaims,
-      validationStatus: "passed",
+      validationStatus: "send_ready",
       validationErrors: [],
     });
     return NextResponse.json(draft);

@@ -26,11 +26,13 @@ RUN apt-get update \
     && rm /tmp/ollama.tar.zst \
     && rm -rf /var/lib/apt/lists/*
 
-COPY workers/outreach/outreach_worker.py /app/outreach_worker.py
+RUN pip install --no-cache-dir "PyYAML>=6.0.1"
+COPY workers/outreach /app/workers/outreach
+COPY config/sources.yaml /app/config/sources.yaml
 COPY examples /app/examples
 RUN mkdir -p /workspace/artifacts
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-  CMD ["python", "/app/outreach_worker.py", "--health-check"]
+  CMD ["python", "/app/workers/outreach/outreach_worker.py", "--health-check"]
 
 CMD ["sleep", "infinity"]

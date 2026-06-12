@@ -135,6 +135,34 @@ function migrate(db: Database.Database): void {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS junglegrid_jobs (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL REFERENCES outreach_runs(id) ON DELETE CASCADE,
+      junglegrid_job_id TEXT UNIQUE,
+      workspace_id TEXT NOT NULL,
+      campaign_id TEXT NOT NULL,
+      pipeline_stage TEXT NOT NULL,
+      estimate_json TEXT,
+      execution_phase TEXT NOT NULL,
+      status_message TEXT,
+      submitted_at TEXT,
+      started_at TEXT,
+      completed_at TEXT,
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      logs_cursor TEXT,
+      artifacts_json TEXT NOT NULL DEFAULT '[]',
+      failure_reason TEXT,
+      workload_metadata_json TEXT NOT NULL DEFAULT '{}',
+      usage_json TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_junglegrid_jobs_run_id
+      ON junglegrid_jobs(run_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_junglegrid_jobs_active
+      ON junglegrid_jobs(execution_phase)
+      WHERE execution_phase NOT IN ('completed', 'failed', 'cancelled', 'timed_out', 'blocked');
+
     CREATE TABLE IF NOT EXISTS run_prospects (
       run_id TEXT NOT NULL REFERENCES outreach_runs(id) ON DELETE CASCADE,
       prospect_id TEXT NOT NULL REFERENCES prospects(id) ON DELETE CASCADE,

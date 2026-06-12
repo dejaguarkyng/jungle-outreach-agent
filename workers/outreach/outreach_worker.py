@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import http.client
+import hashlib
 import json
 import logging
 import os
@@ -23,6 +24,27 @@ from datetime import datetime, timezone
 from html import unescape
 from pathlib import Path
 from typing import Any
+
+import yaml
+
+try:
+    from workers.outreach.source_adapters import (
+        DiscoveryContext,
+        DiscoveryQuery,
+        ProspectSourceAdapter,
+        SourceCandidate,
+        SourceHealth,
+        build_default_registry,
+    )
+except ModuleNotFoundError:  # pragma: no cover - supports direct script execution
+    from source_adapters import (
+        DiscoveryContext,
+        DiscoveryQuery,
+        ProspectSourceAdapter,
+        SourceCandidate,
+        SourceHealth,
+        build_default_registry,
+    )
 
 SITE = "https://junglegrid.dev"
 ALLOWED_LINKS = [SITE]
@@ -51,10 +73,38 @@ TARGET_TERMS = re.compile(
 )
 CONCRETE_WORKLOAD_RE = re.compile(
     r"\b(mcp|model context protocol|agent(?:ic)?|llm|rag|evals?|evaluation|inference|fine[- ]?tun\w*|"
-    r"gpu|batch|queue|worker|background jobs?|long[- ]running|deployment|latency|cost|scal\w*|"
+    r"gpu|cuda|batch|distributed workers?|background jobs?|long[- ]running|deployment|latency|cost|scal\w*|"
     r"serverless gpu|model serving|vllm|ollama|qwen|runpod|modal|replicate|artifacts?|retries?|"
     r"tool calling|orchestrat\w*|scheduler|scrap\w*|enrichment)\b",
     re.I,
+)
+DIRECT_AI_WORKLOAD_RE = re.compile(
+    r"\b(model serving|inference|training|fine[- ]?tun\w*|gpu|cuda|vllm|ollama|qwen|rag|evals?|"
+    r"llm|mcp|model context protocol|tool calling|agentic|ai agent|multi-agent|batch ai|"
+    r"multimodal|serverless gpu)\b",
+    re.I,
+)
+EXECUTION_SURFACE_RE = re.compile(
+    r"\b(long[- ]running|background jobs?|distributed workers?|worker jobs?|batch|retries?|job state|"
+    r"logs?|artifacts?|queue(?:s|ing)?|orchestrat\w*|scheduler|compute routing|capacity|"
+    r"timeout|startup|memory|scal\w*|deployment)\b",
+    re.I,
+)
+GENERIC_PACKAGE_RE = re.compile(
+    r"\b(queue data structure|microtask|polyfill|shim|ponyfill|collection|algorithm|utility|utilities|"
+    r"browser utility|wrapper|tiny queue|priority queue|data structures?|event emitter|promise queue)\b",
+    re.I,
+)
+CONTROL_PLANE_RE = re.compile(
+    r"\b(control plane|orchestrat\w+ layer|workflow engine|scheduler|queue manager|job controller|"
+    r"durable executor|worker fleet)\b",
+    re.I,
+)
+CONTAMINATION_RE = re.compile(
+    r"(@keyframes|data-astro|transform:|min-height:|\[ci-image\]|\[npm-image\]|"
+    r"<(?:script|style|svg)\b|</(?:script|style|svg)>|^\s*[.#][a-z0-9_-]+\s*\{|"
+    r"(?:display|position|padding|margin|font-size|background|border-radius)\s*:)",
+    re.I | re.M,
 )
 VAGUE_RELEVANCE_RE = re.compile(r"\b(agent|ai|workflow|automation)\b", re.I)
 NON_AI_AGENT_RE = re.compile(
@@ -120,6 +170,55 @@ logging.basicConfig(
 )
 LOG = logging.getLogger("outreach-worker")
 OLLAMA_PROCESS: subprocess.Popen[Any] | None = None
+CAMPAIGN: dict[str, Any] = {
+    "schemaVersion": "1.0",
+    "workspaceId": "default",
+    "campaignId": "jungle-grid",
+    "name": "Jungle Grid AI execution",
+    "offer": {
+        "name": "Jungle Grid",
+        "description": "Durable managed execution for inference, workers, retries, logs, and artifacts.",
+        "url": SITE,
+        "senderName": "Benedict",
+        "signature": "Benedict",
+    },
+    "idealCustomerProfile": {
+        "description": "Builders operating AI and durable background workloads.",
+        "categories": [
+            "agent_framework",
+            "mcp",
+            "ai_infrastructure",
+            "inference_training",
+            "agent_compute",
+            "workflow_automation",
+            "llm_application",
+            "open_source_ai",
+        ],
+        "targetTerms": ["ai", "agent", "llm", "mcp", "inference", "training", "gpu"],
+        "workloadTerms": ["inference", "training", "gpu", "llm", "agentic", "batch ai"],
+        "executionTerms": ["worker", "background job", "long-running", "retry", "logs", "artifacts", "queue"],
+        "painTerms": ["timeout", "latency", "capacity", "memory", "cost", "scale", "deployment"],
+        "exclusionTerms": ["queue data structure", "microtask", "polyfill", "shim", "browser utility"],
+    },
+    "qualification": {
+        "requireTargetSignal": True,
+        "requireWorkloadSignal": True,
+        "requireExecutionSignal": True,
+        "requirePainSignal": False,
+        "maximumActivityAgeDays": 180,
+    },
+    "messaging": {
+        "positioning": "Jungle Grid can provide the durable execution layer behind those workloads, including retries, logs, and artifacts.",
+        "callToAction": "If that is a live problem for you, the shortest overview is",
+        "subjectPrefix": "Jungle Grid and",
+    },
+    "execution": {
+        "researchModel": "qwen2.5:3b",
+        "scoringModel": "qwen2.5:3b",
+        "draftingModel": "qwen2.5:3b",
+        "validationModel": "qwen2.5:3b",
+    },
+}
 
 
 def utc_now() -> str:
@@ -166,6 +265,82 @@ def bool_env(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def source_registry_config() -> dict[str, Any]:
+    configured_path = os.getenv("OUTREACH_SOURCES_CONFIG", "").strip()
+    candidates = [
+        Path(configured_path) if configured_path else None,
+        Path("config/sources.yaml"),
+        Path(__file__).resolve().parents[2] / "config" / "sources.yaml",
+        Path("/app/config/sources.yaml"),
+    ]
+    config: dict[str, Any] = {}
+    for candidate in candidates:
+        if candidate is None or not candidate.is_file():
+            continue
+        loaded = yaml.safe_load(candidate.read_text(encoding="utf-8")) or {}
+        if not isinstance(loaded, dict):
+            raise ValueError(f"Source configuration must be a mapping: {candidate}")
+        config = loaded
+        break
+
+    restricted = config.setdefault("restricted_sources", {})
+    if not isinstance(restricted, dict):
+        raise ValueError("restricted_sources must be a mapping")
+    for source_type, env_name in {
+        "discord": "ENABLE_DISCORD_SOURCE",
+        "slack": "ENABLE_SLACK_SOURCE",
+        "linkedin": "ENABLE_LINKEDIN_ENRICHMENT",
+        "facebook_page": "ENABLE_FACEBOOK_PAGE_ENRICHMENT",
+        "product_hunt": "ENABLE_PRODUCT_HUNT_SOURCE",
+    }.items():
+        source_config = restricted.setdefault(source_type, {})
+        if not isinstance(source_config, dict):
+            raise ValueError(f"restricted_sources.{source_type} must be a mapping")
+        if env_name in os.environ:
+            source_config["enabled"] = bool_env(env_name)
+    return config
+
+
+def _terms_regex(terms: list[str]) -> re.Pattern[str]:
+    escaped = [re.escape(term.strip()).replace(r"\ ", r"\s+") for term in terms if term.strip()]
+    return re.compile(rf"\b(?:{'|'.join(escaped)})\b", re.I) if escaped else re.compile(r"(?!x)x")
+
+
+def campaign_regex(key: str) -> re.Pattern[str]:
+    return _terms_regex([str(term) for term in CAMPAIGN["idealCustomerProfile"].get(key, [])])
+
+
+def configure_campaign(input_path: Path | None) -> dict[str, Any]:
+    global CAMPAIGN, SITE, ALLOWED_LINKS
+    raw = os.getenv("OUTREACH_CAMPAIGN_CONFIG", "").strip()
+    contract_raw = os.getenv("OUTREACH_JOB_CONTRACT", "").strip()
+    payload: Any = None
+    if raw:
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as error:
+            raise ValueError("OUTREACH_CAMPAIGN_CONFIG must contain valid JSON.") from error
+    elif contract_raw:
+        try:
+            contract = json.loads(contract_raw)
+        except json.JSONDecodeError as error:
+            raise ValueError("OUTREACH_JOB_CONTRACT must contain valid JSON.") from error
+        if contract.get("schema_version") != "1.0":
+            raise ValueError("Jungle Grid job contract must use schema_version 1.0.")
+        payload = contract.get("campaign_configuration")
+    elif input_path and input_path.exists():
+        source = json.loads(input_path.read_text(encoding="utf-8"))
+        if isinstance(source, dict):
+            payload = source.get("campaign_configuration")
+    if payload is not None:
+        if not isinstance(payload, dict) or payload.get("schemaVersion") != "1.0":
+            raise ValueError("Campaign configuration must use schemaVersion 1.0.")
+        CAMPAIGN = payload
+    SITE = str(CAMPAIGN["offer"]["url"])
+    ALLOWED_LINKS = [SITE]
+    return CAMPAIGN
+
+
 def dedupe_store_path() -> Path:
     raw = os.getenv("OUTREACH_MEMORY_PATH", "data/outreach/prospect_memory.json")
     return Path(raw)
@@ -173,10 +348,20 @@ def dedupe_store_path() -> Path:
 
 def clean_research_text(value: str) -> str:
     text = unescape(value or "")
+    text = re.sub(r"<(?:script|style|svg)\b.*?</(?:script|style|svg)>", " ", text, flags=re.I | re.S)
+    text = re.sub(r"@keyframes\b.*?(?:}\s*})", " ", text, flags=re.I | re.S)
+    text = re.sub(r"\bdata-astro-[a-z0-9_-]+(?:=\"[^\"]*\")?", " ", text, flags=re.I)
+    text = re.sub(
+        r"^\s*(?:transform|min-height|display|position|padding|margin|font-size|background|border-radius)\s*:\s*[^;]+;?\s*$",
+        " ",
+        text,
+        flags=re.I | re.M,
+    )
     text = re.sub(r"<!--.*?-->", " ", text, flags=re.S)
     text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"!\[[^\]]*]\([^)]*\)", " ", text)
     text = re.sub(r"\[[^\]]+]\([^)]*(?:shields\.io|badge|img\.shields)[^)]*\)", " ", text, flags=re.I)
+    text = re.sub(r"^\s*\[[^\]]*(?:ci|npm|badge|image|version)[^\]]*]:\s*\S+\s*$", " ", text, flags=re.I | re.M)
     text = re.sub(r"^\s*\[[^\]]+]:\s*\S+\s*$", " ", text, flags=re.M)
     text = re.sub(r"^\s*[-*]\s+\[[^]]+\]\([^)]*\)\s*$", " ", text, flags=re.M)
     text = re.sub(r"^\s*(table of contents|toc|navigation|contents)\s*$", " ", text, flags=re.I | re.M)
@@ -192,10 +377,41 @@ def clean_research_text(value: str) -> str:
             continue
         if lowered in {"table of contents", "toc", "contents", "navigation"}:
             continue
+        if CONTAMINATION_RE.search(line):
+            continue
         if len(line) < 3:
             continue
         lines.append(line)
     return re.sub(r"\s+", " ", " ".join(lines)).strip()
+
+
+def contamination_reasons(value: str) -> list[str]:
+    reasons: list[str] = []
+    checks = {
+        "css_keyframes": r"@keyframes",
+        "astro_attribute": r"data-astro",
+        "css_transform": r"transform:",
+        "css_min_height": r"min-height:",
+        "badge_reference": r"\[(?:ci|npm)-image\]",
+        "style_or_svg_markup": r"<(?:style|script|svg)\b",
+        "css_declaration": r"(?:display|position|padding|margin|font-size|background|border-radius)\s*:",
+        "malformed_markup": r"</?[a-z][^>]{80,}|[{}]{4,}",
+    }
+    for reason, pattern in checks.items():
+        if re.search(pattern, value or "", re.I):
+            reasons.append(reason)
+    nav_tokens = re.findall(r"\b(?:home|docs|pricing|blog|login|sign up|features|contact)\b", value or "", re.I)
+    if len(nav_tokens) >= 8:
+        reasons.append("repeated_navigation")
+    punctuation = re.findall(r"[|_\-*/#]{4,}", value or "")
+    if len(punctuation) >= 4:
+        reasons.append("excessive_punctuation")
+    return sorted(set(reasons))
+
+
+def is_clean_evidence_text(value: str) -> bool:
+    cleaned = clean_research_text(value)
+    return bool(cleaned and len(cleaned) >= 20 and not contamination_reasons(value) and not contamination_reasons(cleaned))
 
 
 def unique_preserve_order(values: list[str]) -> list[str]:
@@ -254,12 +470,23 @@ def disambiguates_ai_agent(text: str) -> bool:
 
 def extract_evidence_points(text: str) -> list[str]:
     evidence: list[str] = []
+    target_re = campaign_regex("targetTerms")
+    workload_re = campaign_regex("workloadTerms")
+    execution_re = campaign_regex("executionTerms")
     for sentence in split_sentences(text):
+        if not is_clean_evidence_text(sentence):
+            continue
         for chunk in re.split(r",|;|\band\b", sentence):
             lowered = chunk.lower().strip()
             if NON_AI_AGENT_RE.search(lowered):
                 continue
-            if not CONCRETE_WORKLOAD_RE.search(lowered):
+            if GENERIC_PACKAGE_RE.search(lowered) and not workload_re.search(lowered):
+                continue
+            if not (target_re.search(lowered) or workload_re.search(lowered) or execution_re.search(lowered)):
+                continue
+            if re.search(r"\b(queue|worker|agent)\b", lowered) and not (
+                workload_re.search(lowered) or execution_re.search(lowered)
+            ):
                 continue
             cleaned = clip_words(chunk.strip(), 18)
             if cleaned and cleaned not in evidence:
@@ -271,13 +498,313 @@ def extract_evidence_points(text: str) -> list[str]:
 
 def extract_pain_signals(text: str) -> list[str]:
     signals: list[str] = []
+    pain_re = campaign_regex("painTerms")
+    workload_re = campaign_regex("workloadTerms")
+    execution_re = campaign_regex("executionTerms")
     for sentence in split_sentences(text):
-        if not PAIN_SIGNAL_RE.search(sentence):
+        if not is_clean_evidence_text(sentence):
+            continue
+        if not pain_re.search(sentence):
+            continue
+        if not (workload_re.search(sentence) or execution_re.search(sentence)):
             continue
         cleaned = clip_words(sentence, 24)
         if cleaned and cleaned not in signals:
             signals.append(cleaned)
     return signals[:3]
+
+
+def evidence_hash(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
+
+def source_authority(source_type: str) -> float:
+    return {
+        "official_product_documentation": 1.0,
+        "project_docs": 1.0,
+        "repository_readme": 0.95,
+        "github_repository": 0.95,
+        "gitlab_repository": 0.95,
+        "official_website": 0.9,
+        "maintainer_community_statement": 0.85,
+        "news_rss": 0.75,
+        "hackernews": 0.6,
+        "reddit": 0.45,
+        "facebook_page": 0.55,
+        "search_result": 0.2,
+        "unverified_repost": 0.1,
+    }.get(source_type, 0.5)
+
+
+def evidence_directness(claim_type: str, claim: str, source_type: str) -> str:
+    if source_type in {"project_docs", "repository_readme", "github_repository", "gitlab_repository", "official_website"}:
+        return "direct" if claim_type in {"ai_workload", "integration_surface", "activity", "contact", "role"} else "strong_inference"
+    if claim_type in {"why_now", "infrastructure_pain"}:
+        return "strong_inference"
+    return "weak_inference"
+
+
+def build_evidence(
+    prospect: dict[str, Any],
+    claim_type: str,
+    claim: str,
+    source_url: str,
+    source_type: str,
+    directness: str | None = None,
+    published_at: str | None = None,
+) -> dict[str, Any] | None:
+    cleaned = clean_research_text(claim)
+    if not is_clean_evidence_text(cleaned):
+        return None
+    entity_id = prospect.get("entity_id") or f"project:{prospect.get('project_key') or normalize_name(prospect['project']).replace(' ', '-')}"
+    content_hash = evidence_hash(f"{entity_id}|{claim_type}|{cleaned}|{source_url}")
+    return {
+        "evidence_id": f"ev_{content_hash}",
+        "entity_id": entity_id,
+        "claim_type": claim_type,
+        "claim": clip_words(cleaned, 28),
+        "source_url": source_url,
+        "source_type": source_type,
+        "source_authority": source_authority(source_type),
+        "published_at": published_at,
+        "retrieved_at": utc_now(),
+        "directness": directness or evidence_directness(claim_type, cleaned, source_type),
+        "freshness": 1.0,
+        "independence_group": evidence_hash(source_url.split("#", 1)[0].lower()),
+        "content_hash": content_hash,
+        "clean": True,
+    }
+
+
+def evidence_by_type(evidence: list[dict[str, Any]], claim_type: str) -> list[dict[str, Any]]:
+    return [item for item in evidence if item.get("claim_type") == claim_type and item.get("clean")]
+
+
+def evidence_strength_bucket(evidence: list[dict[str, Any]]) -> int:
+    return len({item["independence_group"] for item in evidence if item.get("clean")})
+
+
+def canonical_id(entity_type: str, value: str) -> str:
+    normalized = normalize_name(value).replace(" ", "-") or evidence_hash(value)
+    return f"{entity_type}:{normalized}"
+
+
+def domain_from_url(url: str) -> str:
+    try:
+        return (urllib.parse.urlparse(url).hostname or "").lower().removeprefix("www.")
+    except ValueError:
+        return ""
+
+
+def canonical_entity_graph(prospect: dict[str, Any], evidence: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    evidence = evidence or []
+    email = prospect.get("email", "").lower()
+    email_domain = email.partition("@")[2]
+    project = prospect.get("project", "")
+    project_url = prospect.get("project_url", "")
+    project_domain = domain_from_url(project_url)
+    owner = prospect.get("owner_login", "")
+    repo = parse_github_repo(project_url)
+    project_id = prospect.get("entity_id") or canonical_id("project", project)
+    company_id = canonical_id("company", owner or email_domain or project)
+    person_id = canonical_id("person", f"{prospect.get('name', '')} {email}")
+    contact_id = canonical_id("contact", email)
+    domain_id = canonical_id("domain", email_domain or project_domain or project)
+    entities: list[dict[str, Any]] = [
+        {
+            "entity_id": project_id,
+            "entity_type": "project",
+            "canonical_name": project,
+            "aliases": unique_preserve_order([project, prospect.get("name", ""), project.rsplit("/", 1)[-1] if "/" in project else ""]),
+            "source_specific_ids": {"project_url": project_url},
+            "confidence": 0.9,
+        },
+        {
+            "entity_id": person_id,
+            "entity_type": "person",
+            "canonical_name": prospect.get("name", ""),
+            "aliases": unique_preserve_order([prospect.get("name", ""), owner if prospect.get("owner_type", "").lower() == "user" else ""]),
+            "source_specific_ids": {"email": email},
+            "confidence": 0.75 if prospect.get("owner_type", "").lower() == "user" else 0.55,
+        },
+        {
+            "entity_id": contact_id,
+            "entity_type": "contact_point",
+            "canonical_name": email,
+            "aliases": [email],
+            "source_specific_ids": {"email_source_url": prospect.get("email_source_url", "")},
+            "confidence": float((prospect.get("contact_provenance") or {}).get("confidence") or 0.5),
+        },
+        {
+            "entity_id": domain_id,
+            "entity_type": "domain",
+            "canonical_name": email_domain or project_domain,
+            "aliases": unique_preserve_order([email_domain, project_domain]),
+            "source_specific_ids": {},
+            "confidence": 0.65,
+        },
+        {
+            "entity_id": company_id,
+            "entity_type": "company",
+            "canonical_name": owner or email_domain or project,
+            "aliases": unique_preserve_order([owner, email_domain]),
+            "source_specific_ids": {"owner_login": owner},
+            "confidence": 0.6,
+        },
+    ]
+    relationships: list[dict[str, Any]] = [
+        {
+            "relationship_type": "person_reachable_for_project",
+            "from_entity_id": person_id,
+            "to_entity_id": project_id,
+            "confidence": 0.85 if prospect.get("owner_type", "").lower() == "user" else 0.6,
+            "evidence_ids": [item["evidence_id"] for item in evidence if item.get("claim_type") in {"role", "contact"}],
+        },
+        {
+            "relationship_type": "contact_point_for_person_or_project",
+            "from_entity_id": contact_id,
+            "to_entity_id": person_id if prospect.get("owner_type", "").lower() == "user" else project_id,
+            "confidence": float((prospect.get("contact_provenance") or {}).get("confidence") or 0.5),
+            "evidence_ids": [item["evidence_id"] for item in evidence if item.get("claim_type") == "contact"],
+        },
+        {
+            "relationship_type": "project_has_domain",
+            "from_entity_id": project_id,
+            "to_entity_id": domain_id,
+            "confidence": 0.65,
+            "evidence_ids": [],
+        },
+        {
+            "relationship_type": "company_or_owner_controls_project",
+            "from_entity_id": company_id,
+            "to_entity_id": project_id,
+            "confidence": 0.75 if owner and owner.lower() in project.lower() else 0.5,
+            "evidence_ids": [],
+        },
+    ]
+    if repo:
+        repo_id = canonical_id("repository", f"github.com/{repo[0]}/{repo[1]}")
+        entities.append(
+            {
+                "entity_id": repo_id,
+                "entity_type": "repository",
+                "canonical_name": f"{repo[0]}/{repo[1]}",
+                "aliases": [f"github.com/{repo[0]}/{repo[1]}", f"{repo[0]}/{repo[1]}"],
+                "source_specific_ids": {"github": f"{repo[0]}/{repo[1]}"},
+                "confidence": 0.95,
+            }
+        )
+        relationships.append(
+            {
+                "relationship_type": "repository_represents_project",
+                "from_entity_id": repo_id,
+                "to_entity_id": project_id,
+                "confidence": 0.95,
+                "evidence_ids": [item["evidence_id"] for item in evidence if item.get("source_type") in {"repository_readme", "github_repository"}],
+            }
+        )
+    for url in prospect.get("evidence_urls", []):
+        document_id = canonical_id("source_document", url)
+        entities.append(
+            {
+                "entity_id": document_id,
+                "entity_type": "source_document",
+                "canonical_name": url,
+                "aliases": [url],
+                "source_specific_ids": {"url": url},
+                "confidence": 1.0,
+            }
+        )
+        relationships.append(
+            {
+                "relationship_type": "source_document_supports_project",
+                "from_entity_id": document_id,
+                "to_entity_id": project_id,
+                "confidence": 0.7,
+                "evidence_ids": [item["evidence_id"] for item in evidence if item.get("source_url") == url],
+            }
+        )
+    conflicts: list[dict[str, Any]] = []
+    if email_domain and project_domain and email_domain != project_domain and "github.com" not in project_domain:
+        conflicts.append(
+            {
+                "claim": "contact email domain differs from project domain",
+                "values": [email_domain, project_domain],
+                "resolution": "kept_separate_pending_stronger_official_link",
+                "confidence": 0.4,
+            }
+        )
+    return {
+        "canonical_entity_id": project_id,
+        "canonical_entities": entities,
+        "verified_relationships": relationships,
+        "conflicting_claims": conflicts,
+    }
+
+
+def structured_evidence_for_prospect(
+    prospect: dict[str, Any],
+    diagnostics: dict[str, Any],
+    evidence_points: list[str],
+    pain_signals: list[str],
+) -> list[dict[str, Any]]:
+    evidence: list[dict[str, Any]] = []
+    primary_url = prospect.get("project_url") or prospect.get("email_source_url")
+    source_type = "github_repository" if "github.com" in primary_url else "official_website"
+    workload_claim_type = "ai_workload" if CAMPAIGN.get("campaignId") == "jungle-grid" else "target_workload"
+    for point in evidence_points:
+        item = build_evidence(prospect, workload_claim_type, point, primary_url, source_type)
+        if item:
+            evidence.append(item)
+    for signal in pain_signals:
+        item = build_evidence(prospect, "infrastructure_pain", signal, primary_url, source_type)
+        if item:
+            evidence.append(item)
+    if prospect.get("updated_at") or prospect.get("pushed_at"):
+        activity = f"Repository activity timestamp: {prospect.get('updated_at') or prospect.get('pushed_at')}"
+        item = build_evidence(prospect, "activity", activity, primary_url, source_type, directness="direct")
+        if item:
+            evidence.append(item)
+    contact_claim = f"{prospect['email']} is publicly listed at {prospect['email_source_url']}"
+    contact_item = build_evidence(
+        prospect,
+        "contact",
+        contact_claim,
+        prospect["email_source_url"],
+        prospect["email_source_type"],
+        directness="direct",
+    )
+    if contact_item:
+        evidence.append(contact_item)
+    relationship = "verified maintainer relationship" if prospect.get("owner_type", "").lower() == "user" else "project contact relationship"
+    role_item = build_evidence(
+        prospect,
+        "role",
+        f"{prospect['name']} has a {relationship} for {prospect['project']}",
+        prospect.get("project_url") or prospect["email_source_url"],
+        source_type,
+        directness="strong_inference" if prospect.get("owner_type", "").lower() != "user" else "direct",
+    )
+    if role_item:
+        evidence.append(role_item)
+    if diagnostics.get("has_execution_surface"):
+        surface_item = build_evidence(
+            prospect,
+            "integration_surface",
+            f"{prospect['project']} exposes a campaign-relevant execution or integration surface",
+            primary_url,
+            source_type,
+        )
+        if surface_item:
+            evidence.append(surface_item)
+    seen: set[str] = set()
+    unique: list[dict[str, Any]] = []
+    for item in evidence:
+        if item["evidence_id"] in seen:
+            continue
+        seen.add(item["evidence_id"])
+        unique.append(item)
+    return unique
 
 
 def request_json(
@@ -391,10 +918,25 @@ def normalize_prospect(raw: dict[str, Any]) -> dict[str, Any] | None:
     cleaned_research = clean_research_text(str(raw.get("research_text") or raw.get("project_description") or "").strip())
     return {
         "prospect_id": str(raw.get("prospect_id") or uuid.uuid4()),
+        "schema_version": "2.0",
+        "entity_id": str(raw.get("entity_id") or f"project:{normalize_name(project).replace(' ', '-')}"),
         "name": str(raw.get("name") or project.split("/")[-1]).strip(),
         "email": email,
         "email_source_url": source_url,
         "email_source_type": str(raw.get("email_source_type") or "official_website"),
+        "contact_provenance": raw.get("contact_provenance")
+        or {
+            "value": email,
+            "source_url": source_url,
+            "source_type": str(raw.get("email_source_type") or "official_website"),
+            "publicly_listed": True,
+            "person_project_match": "verified" if str(raw.get("owner_type") or "").lower() == "user" else "project_contact",
+            "verification_method": "public_source",
+            "confidence": contact_quality(email, str(raw.get("email_source_type") or "official_website"), cleaned_research)
+            / 10,
+            "collected_at": utc_now(),
+            "appropriate_use_category": "professional_outreach",
+        },
         "project": project,
         "project_key": normalize_name(project).replace(" ", "-"),
         "project_url": project_url,
@@ -728,6 +1270,31 @@ def query_seed() -> int:
 
 
 def query_pack_order(category: str | None) -> list[dict[str, Any]]:
+    if CAMPAIGN.get("campaignId") != "jungle-grid":
+        icp = CAMPAIGN["idealCustomerProfile"]
+        target_terms = [str(term) for term in icp.get("targetTerms", [])[:4]]
+        workload_terms = [str(term) for term in icp.get("workloadTerms", [])[:4]]
+        execution_terms = [str(term) for term in icp.get("executionTerms", [])[:3]]
+        github_queries = [
+            f'"{target}" "{workload}" stars:>4'
+            for target, workload in zip(target_terms, workload_terms, strict=False)
+        ]
+        github_queries.extend(
+            f'"{target_terms[0]}" "{term}" stars:>4'
+            for term in execution_terms
+            if target_terms
+        )
+        registry_queries = [
+            f"{target} {workload}"
+            for target, workload in zip(target_terms, workload_terms, strict=False)
+        ]
+        return [
+            {
+                "categories": set(icp.get("categories", [])),
+                "github": unique_preserve_order(github_queries),
+                "registry": unique_preserve_order(registry_queries),
+            }
+        ]
     packs = [
         pack
         for pack in QUERY_FAMILIES.values()
@@ -944,9 +1511,8 @@ def qualification_diagnostics(prospect: dict[str, Any]) -> dict[str, Any]:
     text = clean_research_text(
         " ".join(
             [
-                prospect.get("project", ""),
-                prospect.get("project_description", ""),
                 prospect.get("research_text", ""),
+                prospect.get("project_description", ""),
             ]
         )
     )
@@ -957,10 +1523,29 @@ def qualification_diagnostics(prospect: dict[str, Any]) -> dict[str, Any]:
     evidence_points = extract_evidence_points(text)
     pain_signals = extract_pain_signals(text)
     repo_label = f"{prospect.get('project', '')} {prospect.get('project_description', '')}"
+    target_re = campaign_regex("targetTerms")
+    workload_re = campaign_regex("workloadTerms")
+    execution_re = campaign_regex("executionTerms")
+    exclusion_re = campaign_regex("exclusionTerms")
+    has_target_signal = bool(target_re.search(text)) and bool(evidence_points)
+    has_workload_signal = bool(workload_re.search(text)) and bool(evidence_points)
+    has_execution_surface = bool(execution_re.search(text)) and bool(evidence_points)
+    has_pain_signal = bool(pain_signals)
+    generic_package = bool(GENERIC_PACKAGE_RE.search(text)) and not has_workload_signal
+    configured_exclusion = bool(exclusion_re.search(text))
+    qualification = CAMPAIGN["qualification"]
+    maximum_age = int(qualification.get("maximumActivityAgeDays", 180))
+    contamination = contamination_reasons(str(prospect.get("research_text", "")))
     excluded_rule: str | None = None
     missing_evidence: list[str] = []
 
-    if is_large_org(owner):
+    if contamination:
+        excluded_rule = "contaminated_evidence"
+    elif generic_package:
+        excluded_rule = "generic_package_without_ai_workload"
+    elif configured_exclusion:
+        excluded_rule = "campaign_exclusion_term"
+    elif is_large_org(owner):
         excluded_rule = "large_vendor_or_foundation_org"
     elif is_generic_contact_email(email):
         excluded_rule = "generic_contact_email"
@@ -972,16 +1557,32 @@ def qualification_diagnostics(prospect: dict[str, Any]) -> dict[str, Any]:
         excluded_rule = "non_ai_agent_context"
     elif not evidence_points:
         excluded_rule = "no_concrete_ai_workload_evidence"
-    elif updated_days is None or updated_days > 180:
+    elif qualification.get("requireTargetSignal", True) and not has_target_signal:
+        excluded_rule = "missing_campaign_target_signal"
+    elif qualification.get("requireWorkloadSignal", True) and not has_workload_signal:
+        excluded_rule = "missing_campaign_workload_signal"
+    elif qualification.get("requireExecutionSignal", False) and not has_execution_surface:
+        excluded_rule = "missing_campaign_execution_signal"
+    elif qualification.get("requirePainSignal", False) and not has_pain_signal:
+        excluded_rule = "missing_campaign_pain_signal"
+    elif updated_days is None or updated_days > maximum_age:
         excluded_rule = "stale_project"
     elif contact_quality(email, prospect["email_source_type"], text[:2000]) < 5:
         excluded_rule = "low_quality_contact"
 
     if not evidence_points:
         missing_evidence.append("concrete workload execution evidence")
+    if qualification.get("requireTargetSignal", True) and not has_target_signal:
+        missing_evidence.append("campaign target signal")
+    if qualification.get("requireWorkloadSignal", True) and not has_workload_signal:
+        missing_evidence.append("campaign workload signal")
+    if qualification.get("requireExecutionSignal", False) and not has_execution_surface:
+        missing_evidence.append("campaign execution or integration signal")
+    if contamination:
+        missing_evidence.append("clean uncontaminated evidence")
     if len(pain_signals) < 1:
         missing_evidence.append("execution pain signal")
-    if updated_days is None or updated_days > 180:
+    if updated_days is None or updated_days > maximum_age:
         missing_evidence.append("recent activity")
     if contact_quality(email, prospect["email_source_type"], text[:2000]) < 7:
         missing_evidence.append("builder-grade direct contact")
@@ -1005,9 +1606,15 @@ def qualification_diagnostics(prospect: dict[str, Any]) -> dict[str, Any]:
         "exclusion_rule_triggered": excluded_rule or "",
         "missing_evidence": missing_evidence,
         "duplicate": False,
-        "stale": bool(updated_days is None or updated_days > 180),
+        "stale": bool(updated_days is None or updated_days > maximum_age),
         "generic": is_generic_contact_email(email),
-        "irrelevant": not evidence_points or NON_AI_AGENT_RE.search(text) is not None,
+        "irrelevant": not evidence_points or not has_target_signal,
+        "generic_package": generic_package,
+        "contamination_reasons": contamination,
+        "has_direct_ai_workload": has_workload_signal,
+        "has_campaign_target_signal": has_target_signal,
+        "has_campaign_workload_signal": has_workload_signal,
+        "has_execution_surface": has_execution_surface,
         "large_company": is_large_org(owner),
         "owner_key": owner_key(owner),
         "contact_quality": contact_quality(email, prospect["email_source_type"], text[:2000]),
@@ -1081,7 +1688,187 @@ def discover_from_github(target: int, category: str | None) -> list[dict[str, An
     return [prospect for prospect in prospects if prospect]
 
 
-def discover(target: int, input_path: Path | None, category: str | None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def candidate_repository(candidate: SourceCandidate) -> tuple[str, str] | None:
+    metadata = candidate.metadata or {}
+    values = [
+        metadata.get("repository_url"),
+        metadata.get("homepage"),
+        metadata.get("project_url"),
+        candidate.url,
+        *[url for url in metadata.get("resolved_urls", []) if isinstance(url, str)],
+    ]
+    for value in values:
+        repo = parse_github_repo(value if isinstance(value, str) else None)
+        if repo:
+            return repo
+    return None
+
+
+def candidate_official_urls(candidate: SourceCandidate) -> list[str]:
+    urls: list[str] = []
+    metadata = candidate.metadata or {}
+    for value in [
+        metadata.get("official_url"),
+        metadata.get("homepage"),
+        metadata.get("project_url"),
+        metadata.get("repository_url"),
+        *[url for url in metadata.get("resolved_urls", []) if isinstance(url, str)],
+    ]:
+        if isinstance(value, str) and value.startswith(("http://", "https://")):
+            urls.append(value)
+    if candidate.source_type in {"official_website", "gitlab", "huggingface", "docker_hub", "npm", "pypi"}:
+        urls.append(candidate.url)
+    return list(dict.fromkeys(urls))
+
+
+def prospect_from_source_candidate(
+    adapter: ProspectSourceAdapter,
+    candidate: SourceCandidate,
+    category: str | None,
+    seen_projects: set[str],
+) -> dict[str, Any] | None:
+    repo = candidate_repository(candidate)
+    if repo:
+        owner, repo_name = repo
+        full_name = f"{owner}/{repo_name}".lower()
+        if full_name in seen_projects:
+            return None
+        try:
+            payload = request_json(
+                f"https://api.github.com/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo_name)}",
+                headers=github_headers(),
+            )
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+            return None
+        seen_projects.add(full_name)
+        prospect = repo_to_prospect(payload, category)
+        if prospect:
+            prospect["discovery_source"] = candidate.source_type
+        return prospect
+
+    if candidate.source_type in {"news_rss", "hackernews", "reddit", "stack_exchange", "youtube", "arxiv"}:
+        return None
+
+    contacts, page_text = website_contacts(candidate_official_urls(candidate), candidate.source_type)
+    best_contact = pick_best_contact(contacts)
+    if not best_contact:
+        return None
+    documents = adapter.fetch(candidate, DiscoveryContext(deterministic=False))
+    evidence = adapter.normalize(documents, DiscoveryContext(deterministic=False))
+    evidence_text = " ".join(item.claim for item in evidence) or page_text or str(candidate.metadata.get("description") or "")
+    project_url = candidate.url
+    return normalize_prospect(
+        {
+            "name": best_contact["email"].partition("@")[0].replace(".", " ").title(),
+            "email": best_contact["email"],
+            "email_source_url": best_contact["source_url"],
+            "email_source_type": best_contact["source_type"] if best_contact["source_type"] in {
+                "github_profile",
+                "repository_readme",
+                "official_website",
+                "project_docs",
+                "package_page",
+            } else "official_website",
+            "project": candidate.title or urllib.parse.urlparse(project_url).netloc,
+            "project_url": project_url,
+            "project_description": str(candidate.metadata.get("description") or candidate.title or ""),
+            "category": category or category_for(evidence_text),
+            "research_text": evidence_text,
+            "evidence_urls": [candidate.url, best_contact["source_url"], *[item.source_url for item in evidence]],
+            "owner_login": urllib.parse.urlparse(project_url).netloc,
+            "owner_type": "",
+            "updated_at": candidate.published_at or utc_now(),
+        }
+    )
+
+
+def discover_from_adapters(
+    registry: Any,
+    target: int,
+    category: str | None,
+    seen_projects: set[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    prospects: list[dict[str, Any]] = []
+    signals: list[dict[str, Any]] = []
+    context = DiscoveryContext(deterministic=bool_env("OUTREACH_ADAPTER_FIXTURES"))
+    adapters = [
+        adapter
+        for adapter in registry.enabled()
+        if adapter.health_check().status != "disabled" and adapter.source_type != "github"
+    ]
+    terms: list[str] = []
+    for pack in query_pack_order(category):
+        terms.extend(pack.get("registry", [])[:2])
+        terms.extend(pack.get("github", [])[:1])
+    for adapter in adapters:
+        for term in list(dict.fromkeys(terms))[:6]:
+            if len(prospects) >= target:
+                return prospects, signals
+            query = DiscoveryQuery(text=term, category=category, limit=4)
+            try:
+                candidates = adapter.discover(query, context)
+            except Exception as error:
+                signals.append({"source_type": adapter.source_type, "status": "degraded", "error": str(error)})
+                continue
+            if hasattr(adapter, "drain_errors"):
+                for error in adapter.drain_errors():
+                    signals.append(
+                        {
+                            "source_type": error.source_type,
+                            "status": "degraded",
+                            "operation": error.operation,
+                            "error_category": error.category,
+                            "error": error.message,
+                            "retryable": error.retryable,
+                            "attempt": error.attempt,
+                            "occurred_at": error.occurred_at,
+                        }
+                    )
+            for candidate in candidates:
+                if len(prospects) >= target:
+                    break
+                documents = adapter.fetch(candidate, context)
+                if hasattr(adapter, "drain_errors"):
+                    for error in adapter.drain_errors():
+                        signals.append(
+                            {
+                                "source_type": error.source_type,
+                                "status": "degraded",
+                                "operation": error.operation,
+                                "error_category": error.category,
+                                "error": error.message,
+                                "retryable": error.retryable,
+                                "attempt": error.attempt,
+                                "occurred_at": error.occurred_at,
+                            }
+                        )
+                evidence = adapter.normalize(documents, context)
+                signals.append(
+                    {
+                        "source_type": candidate.source_type,
+                        "source_id": candidate.source_id,
+                        "url": candidate.url,
+                        "title": candidate.title,
+                        "evidence_count": len(evidence),
+                        "repository_url": str(candidate.metadata.get("repository_url") or ""),
+                        "official_url": str(candidate.metadata.get("official_url") or ""),
+                        "independence_groups": sorted({item.independence_group for item in evidence}),
+                    }
+                )
+                if not evidence:
+                    continue
+                prospect = prospect_from_source_candidate(adapter, candidate, category, seen_projects)
+                if prospect:
+                    prospects.append(prospect)
+    return prospects, signals
+
+
+def discover(
+    target: int,
+    input_path: Path | None,
+    category: str | None,
+    registry: Any | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     excluded_emails = load_json_env_list("OUTREACH_EXCLUDED_EMAILS")
     excluded_domains = load_json_env_list("OUTREACH_EXCLUDED_DOMAINS")
     excluded_project_keys = load_json_env_list("OUTREACH_EXCLUDED_PROJECT_KEYS")
@@ -1091,6 +1878,16 @@ def discover(target: int, input_path: Path | None, category: str | None) -> tupl
     prospects = load_seed(input_path)
     if category:
         prospects = [prospect for prospect in prospects if prospect["category"] == category]
+    adapter_signals: list[dict[str, Any]] = []
+    seen_adapter_projects: set[str] = {prospect["project"].strip().lower() for prospect in prospects}
+    if registry and len(prospects) < target:
+        adapter_prospects, adapter_signals = discover_from_adapters(
+            registry,
+            max(target * 2, target - len(prospects)),
+            category,
+            seen_adapter_projects,
+        )
+        prospects.extend(adapter_prospects)
     if len(prospects) < target:
         prospects.extend(discover_from_github(max(target * 3, target - len(prospects)), category))
     unique: dict[str, dict[str, Any]] = {}
@@ -1191,7 +1988,7 @@ def discover(target: int, input_path: Path | None, category: str | None) -> tupl
             break
     accepted = list(unique.values())[:target]
     persist_memory(accepted)
-    return accepted, skipped
+    return accepted, skipped, adapter_signals
 
 
 def pick_detail(text: str, fallback: str) -> str:
@@ -1210,22 +2007,35 @@ def research(prospects: list[dict[str, Any]]) -> list[dict[str, Any]]:
         evidence_points = diagnostics["evidence_points"] or [
             pick_detail(prospect["research_text"], prospect["project_description"] or prospect["project"])
         ]
-        pain_signal = diagnostics["pain_signals"][0] if diagnostics["pain_signals"] else evidence_points[0]
+        pain_signals = diagnostics["pain_signals"]
+        pain_signal = next(
+            (signal for signal in pain_signals if signal.lower() != evidence_points[0].lower()),
+            pain_signals[0] if pain_signals else evidence_points[0],
+        )
+        structured_evidence = structured_evidence_for_prospect(prospect, diagnostics, evidence_points, pain_signals)
+        graph = canonical_entity_graph(prospect, structured_evidence)
+        prospect.update(graph)
         summary_parts = evidence_points[:2]
         strength = max(0.0, min(1.0, float(diagnostics.get("contact_quality", 0)) / 10 * 0.15 + 0.25 + 0.25 * len(evidence_points) + (0.15 if diagnostics.get("small_team_context") else 0) + (0.2 if not diagnostics.get("stale") else 0)))
         notes.append(
             {
                 "prospect_id": prospect["prospect_id"],
+                "entity_id": prospect.get("canonical_entity_id") or prospect["entity_id"],
                 "summary": clip_words(f"{prospect['project']} shows {'. '.join(summary_parts)}", 45),
                 "personalization_detail": clip_words(evidence_points[0], 20),
                 "junglegrid_relevance": clip_words(
-                    f"Likely fit because {pain_signal} points to real execution overhead around queues, workers, inference, or long-running jobs.",
+                    f"Likely fit for {CAMPAIGN['offer']['name']} because {pain_signal} matches the configured campaign signals.",
+                    28,
+                ),
+                "campaign_relevance": clip_words(
+                    f"Likely fit for {CAMPAIGN['offer']['name']} because {pain_signal} matches the configured campaign signals.",
                     28,
                 ),
                 "evidence_urls": prospect["evidence_urls"],
                 "evidence_strength": round(strength, 2),
                 "evidence_points": evidence_points,
-                "pain_signals": diagnostics["pain_signals"],
+                "pain_signals": pain_signals,
+                "evidence": structured_evidence,
             }
         )
     return notes
@@ -1243,20 +2053,26 @@ def score_breakdown(prospect: dict[str, Any], note: dict[str, Any]) -> dict[str,
             ]
         )
     )
-    category = prospect["category"]
     evidence_points = note.get("evidence_points", [])
     pain_signals = note.get("pain_signals", [])
-    contact = int(prospect.get("diagnostics", {}).get("contact_quality", 0))
-    updated_days = prospect.get("diagnostics", {}).get("updated_days")
-    agent = 20 if category in {"agent_framework", "mcp", "agent_compute"} and evidence_points else (
-        14 if disambiguates_ai_agent(text) else 2
+    diagnostics = prospect.get("diagnostics", {})
+    contact = int(diagnostics.get("contact_quality", 0))
+    updated_days = diagnostics.get("updated_days")
+    target_match = bool(campaign_regex("targetTerms").search(text))
+    workload_match = bool(campaign_regex("workloadTerms").search(text))
+    agent = 20 if target_match and len(evidence_points) >= 2 else (12 if target_match and evidence_points else 0)
+    workload = (
+        20
+        if workload_match and len(evidence_points) >= 2
+        else (12 if workload_match and evidence_points else 0)
     )
-    workload = 20 if re.search(r"\b(inference|gpu|batch|fine[- ]?tun|eval|rag|worker|queue)\b", text, re.I) and len(evidence_points) >= 2 else (
-        12 if evidence_points else 0
-    )
-    infrastructure = 20 if pain_signals else (12 if re.search(r"\b(runtime|deploy|latency|cost|artifact|retry)\b", text, re.I) else 0)
+    infrastructure = 20 if pain_signals else 0
     activity = 15 if updated_days is not None and updated_days <= 30 else (11 if updated_days is not None and updated_days <= 90 else 4)
-    comprehension = 15 if len(evidence_points) >= 2 and pain_signals else (8 if len(evidence_points) >= 2 else 0)
+    comprehension = (
+        15
+        if len(evidence_points) >= 2 and diagnostics.get("has_execution_surface")
+        else (8 if len(evidence_points) >= 2 else 0)
+    )
     return {
         "agentMcpRelevance": min(20, agent),
         "aiWorkloadRelevance": min(20, workload),
@@ -1276,14 +2092,48 @@ def score(prospects: list[dict[str, Any]], notes: list[dict[str, Any]]) -> list[
         public = {key: value for key, value in prospect.items() if key not in {"research_text", "evidence_urls", "stars", "active"}}
         diagnostics = prospect.get("diagnostics", {})
         evidence_points = note.get("evidence_points", [])
+        evidence_items = note.get("evidence", [])
         concrete_pain_signal = (note.get("pain_signals") or evidence_points or [prospect["project_description"]])[0]
         fit_score = sum(breakdown.values())
+        independent_evidence_count = max(0, min(3, len(evidence_points)))
+        if independent_evidence_count <= 1:
+            fit_score = min(fit_score, 50)
+        elif independent_evidence_count == 2:
+            fit_score = min(fit_score, 70)
+        if fit_score >= 90 and (
+            len(evidence_points) < 3
+            or not diagnostics.get("has_direct_ai_workload")
+            or not diagnostics.get("has_execution_surface")
+            or diagnostics.get("contact_quality", 0) < 8
+        ):
+            fit_score = 89
         rows.append(
             {
                 **public,
                 "fit_score": fit_score,
                 "score_breakdown": breakdown,
                 "evidence_strength": note["evidence_strength"],
+                "evidence": evidence_items,
+                "score_evidence_ids": {
+                    "agentMcpRelevance": [
+                        item["evidence_id"] for item in evidence_items if item.get("claim_type") in {"ai_workload", "target_workload", "product_fit", "integration_surface"}
+                    ][:3],
+                    "aiWorkloadRelevance": [
+                        item["evidence_id"] for item in evidence_items if item.get("claim_type") in {"ai_workload", "target_workload"}
+                    ][:3],
+                    "infrastructurePain": [
+                        item["evidence_id"] for item in evidence_items if item.get("claim_type") == "infrastructure_pain"
+                    ][:3],
+                    "openSourceActivity": [
+                        item["evidence_id"] for item in evidence_items if item.get("claim_type") == "activity"
+                    ][:2],
+                    "jungleGridComprehension": [
+                        item["evidence_id"] for item in evidence_items if item.get("claim_type") == "integration_surface"
+                    ][:2],
+                    "contactQuality": [
+                        item["evidence_id"] for item in evidence_items if item.get("claim_type") == "contact"
+                    ][:2],
+                },
                 "contact_quality": diagnostics.get("contact_quality", 0),
                 "evidence_points": evidence_points,
                 "why_this_person": clip_words(
@@ -1296,8 +2146,13 @@ def score(prospects: list[dict[str, Any]], notes: list[dict[str, Any]]) -> list[
                 ),
                 "concrete_pain_signal": concrete_pain_signal,
                 "suggested_angle": clip_words(
-                    "Position Jungle Grid as durable execution for inference, workers, retries, and inspectable artifacts.",
+                    note.get("semantic_suggested_angle") or CAMPAIGN["messaging"]["positioning"],
                     18,
+                ),
+                "score_explanation": note.get("semantic_score_explanation")
+                or clip_words(
+                    f"The score is grounded in {len(evidence_items)} structured evidence items and the configured campaign signals.",
+                    30,
                 ),
                 "outreach_priority": "high" if fit_score >= 85 else ("medium" if fit_score >= 75 else "low"),
                 "excluded": False,
@@ -1311,13 +2166,25 @@ def template_draft(prospect: dict[str, Any], note: dict[str, Any]) -> tuple[str,
     project_name = prospect["project"].split("/")[-1]
     detail = clip_words(note["personalization_detail"], 14)
     pain = clip_words((note.get("pain_signals") or [note["personalization_detail"]])[0], 14)
+    offer = CAMPAIGN["offer"]
+    messaging = CAMPAIGN["messaging"]
+    if CAMPAIGN.get("campaignId") == "jungle-grid" and CONTROL_PLANE_RE.search(
+        f"{note.get('summary', '')} {note.get('personalization_detail', '')}"
+    ):
+        angle = "Jungle Grid can sit underneath that control plane as an execution target for heavier jobs."
+    elif CAMPAIGN.get("campaignId") == "jungle-grid" and re.search(
+        r"\b(gpu|inference|model serving|vllm|fine[- ]?tun)", pain, re.I
+    ):
+        angle = "Jungle Grid is meant to add routed compute capacity without making you own the execution layer."
+    else:
+        angle = messaging["positioning"]
     body = (
         f"Hi {first_name},\n\n"
         f"I read the public docs for {project_name} and noticed {detail}. "
-        "I’m building Jungle Grid for teams that need to run inference, workers, and other long-running AI jobs without building queueing, retries, and artifact handling from scratch.\n\n"
-        f"The reason I reached out is that {pain}. That usually shows up when an AI product moves from demos into real workloads and the background execution layer starts becoming the bottleneck.\n\n"
-        f"If that is a live problem for you, the shortest overview is {SITE}.\n\n"
-        "Benedict"
+        f"I’m building {offer['name']}: {offer['description']} {angle}\n\n"
+        f"The reason I reached out is that {pain}. That detail matches the audience and operating signals configured for this campaign.\n\n"
+        f"{messaging['callToAction']} {SITE}.\n\n"
+        f"{offer['signature']}"
     )
     if word_count(body) < MIN_WORDS:
         body = body.replace(
@@ -1327,15 +2194,15 @@ def template_draft(prospect: dict[str, Any], note: dict[str, Any]) -> tuple[str,
     if word_count(body) > MAX_WORDS:
         detail = clip_words(note["personalization_detail"], 10)
         return template_draft(prospect, {**note, "personalization_detail": detail, "pain_signals": [pain]})
-    return f"Jungle Grid and {project_name}"[:MAX_SUBJECT], body, [detail]
+    return f"{messaging['subjectPrefix']} {project_name}"[:MAX_SUBJECT], body, [detail]
 
 
-SYSTEM_PROMPT = (
-    "You write concise founder-led outreach emails using only the provided evidence. "
-    "Do not invent facts. Output plain text only. Include exactly one link and it must be "
-    "https://junglegrid.dev. Keep the email under 140 words. If evidence is "
-    "insufficient, return SKIP."
-)
+def system_prompt() -> str:
+    return (
+        "You write concise founder-led outreach emails using only the provided evidence and campaign configuration. "
+        f"Do not invent facts. Output plain text only. Include exactly one link and it must be {SITE}. "
+        "Keep the email under 140 words. If evidence is insufficient, return SKIP."
+    )
 
 
 def ollama_base() -> str:
@@ -1410,6 +2277,7 @@ def qwen_draft(
     model: str,
 ) -> tuple[str, str, list[str]] | None:
     prompt = {
+        "campaign": CAMPAIGN,
         "recipient": {"name": prospect["name"], "project": prospect["project"]},
         "public_evidence": {
             "detail": note["personalization_detail"],
@@ -1420,7 +2288,7 @@ def qwen_draft(
         "output": {
             "format": "JSON",
             "fields": ["subject", "body", "personalization_claims"],
-            "signature": "Benedict",
+            "signature": CAMPAIGN["offer"]["signature"],
         },
     }
     response = request_json(
@@ -1428,7 +2296,7 @@ def qwen_draft(
         method="POST",
         payload={
             "model": model,
-            "system": SYSTEM_PROMPT,
+            "system": system_prompt(),
             "prompt": json.dumps(prompt),
             "format": "json",
             "stream": False,
@@ -1447,6 +2315,225 @@ def qwen_draft(
         str(generated.get("body", "")).strip(),
         [str(claim).strip() for claim in generated.get("personalization_claims", []) if str(claim).strip()],
     )
+
+
+def qwen_semantic_analysis(
+    prospects: list[dict[str, Any]],
+    notes: list[dict[str, Any]],
+    model: str,
+) -> dict[str, dict[str, Any]]:
+    notes_by_id = {note["prospect_id"]: note for note in notes}
+    prompt = {
+        "campaign": CAMPAIGN,
+        "task": (
+            "Analyze each prospect using only the supplied evidence. Decide whether the campaign "
+            "qualification is supported, summarize the research, explain the evidence-bound score, "
+            "and select a non-fabricated outreach angle."
+        ),
+        "prospects": [
+            {
+                "prospect_id": prospect["prospect_id"],
+                "project": prospect["project"],
+                "category": prospect["category"],
+                "description": prospect["project_description"],
+                "deterministic_qualification": prospect.get("diagnostics", {}),
+                "research": notes_by_id[prospect["prospect_id"]],
+            }
+            for prospect in prospects
+        ],
+        "output": {
+            "format": "JSON",
+            "shape": {
+                "items": [
+                    {
+                        "prospect_id": "string",
+                        "qualified": "boolean",
+                        "qualification_reason": "string",
+                        "research_analysis": "string",
+                        "score_explanation": "string",
+                        "suggested_angle": "string",
+                    }
+                ]
+            },
+        },
+    }
+    response = request_json(
+        f"{ollama_base()}/api/generate",
+        method="POST",
+        payload={
+            "model": model,
+            "system": (
+                "You are a strict evidence analyst. Do not add facts absent from the supplied "
+                "evidence. Return valid JSON for every prospect ID."
+            ),
+            "prompt": json.dumps(prompt),
+            "format": "json",
+            "stream": False,
+            "options": {"temperature": 0.1},
+        },
+        timeout=240,
+    )
+    generated = json.loads(str(response.get("response", "")).strip())
+    items = generated.get("items")
+    if not isinstance(items, list):
+        raise ValueError("Semantic analysis did not return an items array.")
+    expected = {prospect["prospect_id"] for prospect in prospects}
+    results: dict[str, dict[str, Any]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        prospect_id = str(item.get("prospect_id", ""))
+        if prospect_id not in expected:
+            continue
+        required_text = [
+            str(item.get("qualification_reason", "")).strip(),
+            str(item.get("research_analysis", "")).strip(),
+            str(item.get("score_explanation", "")).strip(),
+            str(item.get("suggested_angle", "")).strip(),
+        ]
+        if not all(required_text) or not isinstance(item.get("qualified"), bool):
+            raise ValueError(f"Semantic analysis is incomplete for {prospect_id}.")
+        results[prospect_id] = {
+            "qualified": item["qualified"],
+            "qualification_reason": clip_words(required_text[0], 28),
+            "research_analysis": clip_words(required_text[1], 45),
+            "score_explanation": clip_words(required_text[2], 45),
+            "suggested_angle": clip_words(required_text[3], 28),
+        }
+    if set(results) != expected:
+        raise ValueError("Semantic analysis omitted one or more prospects.")
+    return results
+
+
+def apply_semantic_analysis(
+    prospects: list[dict[str, Any]],
+    notes: list[dict[str, Any]],
+    analysis: dict[str, dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    notes_by_id = {note["prospect_id"]: note for note in notes}
+    accepted: list[dict[str, Any]] = []
+    accepted_notes: list[dict[str, Any]] = []
+    excluded: list[dict[str, Any]] = []
+    for prospect in prospects:
+        result = analysis[prospect["prospect_id"]]
+        note = notes_by_id[prospect["prospect_id"]]
+        note["semantic_research_analysis"] = result["research_analysis"]
+        note["semantic_qualification_reason"] = result["qualification_reason"]
+        note["semantic_score_explanation"] = result["score_explanation"]
+        note["semantic_suggested_angle"] = result["suggested_angle"]
+        if not result["qualified"]:
+            excluded.append(
+                {
+                    "prospect_id": prospect["prospect_id"],
+                    "project": prospect["project"],
+                    "skip_reason": "semantic_qualification_rejected",
+                    "exclusion_rule_triggered": "semantic_qualification_rejected",
+                    "missing_evidence": [result["qualification_reason"]],
+                }
+            )
+            continue
+        prospect["semantic_qualified"] = True
+        accepted.append(prospect)
+        accepted_notes.append(note)
+    return accepted, accepted_notes, excluded
+
+
+def qwen_semantic_validate_drafts(
+    drafts: list[dict[str, Any]],
+    notes: list[dict[str, Any]],
+    model: str,
+) -> dict[str, dict[str, Any]]:
+    notes_by_id = {note["prospect_id"]: note for note in notes}
+    prompt = {
+        "campaign": CAMPAIGN,
+        "task": (
+            "Semantically validate each draft. Reject unsupported claims, malformed personalization, "
+            "irrelevant prospects, relationship mismatches, contaminated evidence, and incorrect offer angles."
+        ),
+        "drafts": [
+            {
+                "prospect_id": draft["prospect_id"],
+                "subject": draft["subject"],
+                "body": draft["body"],
+                "claims": draft["personalization_claims"],
+                "evidence": notes_by_id[draft["prospect_id"]],
+            }
+            for draft in drafts
+        ],
+        "output": {
+            "format": "JSON",
+            "shape": {
+                "items": [
+                    {
+                        "prospect_id": "string",
+                        "status": "send_ready|manual_review_required|regeneration_required|excluded",
+                        "reasons": ["string"],
+                    }
+                ]
+            },
+        },
+    }
+    response = request_json(
+        f"{ollama_base()}/api/generate",
+        method="POST",
+        payload={
+            "model": model,
+            "system": "You are a fail-closed outreach semantic validator. Return valid JSON only.",
+            "prompt": json.dumps(prompt),
+            "format": "json",
+            "stream": False,
+            "options": {"temperature": 0.0},
+        },
+        timeout=240,
+    )
+    generated = json.loads(str(response.get("response", "")).strip())
+    items = generated.get("items")
+    if not isinstance(items, list):
+        raise ValueError("Semantic validation did not return an items array.")
+    allowed = {"send_ready", "manual_review_required", "regeneration_required", "excluded"}
+    expected = {draft["prospect_id"] for draft in drafts}
+    results: dict[str, dict[str, Any]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        prospect_id = str(item.get("prospect_id", ""))
+        status = str(item.get("status", ""))
+        reasons = [str(reason).strip() for reason in item.get("reasons", []) if str(reason).strip()]
+        if prospect_id not in expected or status not in allowed:
+            continue
+        if status != "send_ready" and not reasons:
+            raise ValueError(f"Semantic validation omitted reasons for {prospect_id}.")
+        results[prospect_id] = {"status": status, "reasons": reasons}
+    if set(results) != expected:
+        raise ValueError("Semantic validation omitted one or more drafts.")
+    return results
+
+
+def apply_semantic_draft_validation(
+    drafts: list[dict[str, Any]],
+    failures: list[dict[str, Any]],
+    validation: dict[str, dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    accepted: list[dict[str, Any]] = []
+    next_failures = list(failures)
+    for draft in drafts:
+        if draft["prospect_id"] not in validation:
+            accepted.append(draft)
+            continue
+        result = validation[draft["prospect_id"]]
+        draft["validation_status"] = result["status"]
+        draft["validation_errors"] = result["reasons"]
+        if result["status"] == "send_ready":
+            accepted.append(draft)
+        else:
+            next_failures.append(
+                {
+                    "prospect_id": draft["prospect_id"],
+                    "validation_status": result["status"],
+                    "errors": result["reasons"],
+                }
+            )
+    return accepted, next_failures
 
 
 def build_draft_candidate(
@@ -1472,7 +2559,7 @@ def build_draft_candidate(
         "evidence_urls": note["evidence_urls"],
         "personalization_claims": claims,
         "model_mode": model_mode,
-        "validation_status": "passed",
+        "validation_status": "manual_review_required" if model_mode == "fallback" else "send_ready",
         "validation_errors": [],
     }
 
@@ -1480,6 +2567,7 @@ def build_draft_candidate(
 def validate_draft(draft: dict[str, Any], max_per_domain: int, domains: Counter[str]) -> list[str]:
     errors: list[str] = []
     body = draft["body"]
+    evidence_text = " ".join([body, *draft.get("personalization_claims", [])])
     links = [link.rstrip(".,;:!?") for link in URL_RE.findall(f"{draft['subject']}\n{body}")]
     count = word_count(body)
     domain = draft["email"].split("@")[-1].lower()
@@ -1499,6 +2587,26 @@ def validate_draft(draft: dict[str, Any], max_per_domain: int, domains: Counter[
         errors.append("email source URL must be included in evidence URLs")
     if not draft["personalization_claims"]:
         errors.append("at least one evidence-bound personalization claim is required")
+    if draft.get("model_mode") == "fallback":
+        draft["validation_status"] = "manual_review_required"
+        draft["validation_errors"] = unique_preserve_order(
+            [*draft.get("validation_errors", []), "fallback generation requires manual review"]
+        )
+    if contamination_reasons(evidence_text):
+        errors.append("draft contains contaminated evidence")
+    if re.search(r"\bi noticed\b\s*(?:$|[.,;:])", body, re.I):
+        errors.append("personalization is incomplete after 'I noticed'")
+    if re.search(r"\bnoticed\s+[a-z0-9_.-]+/[a-z0-9_.-]+\b", body, re.I):
+        errors.append("personalization awkwardly inserts a raw repository coordinate")
+    if re.search(r"\bi noticed\b[^.]{0,80}(?:@keyframes|data-astro|transform:|min-height:|\[npm-image\])", body, re.I):
+        errors.append("personalization contains malformed scraped fragment")
+    if re.search(r"\b(repo|project) is active\b", body, re.I) and not re.search(r"\b(updated|commit|release|issue|activity)\b", evidence_text, re.I):
+        errors.append("activity claim lacks date or activity evidence")
+    if (
+        re.search(r"\bwithout building queueing, retries\b|\bfrom scratch\b", body, re.I)
+        and CONTROL_PLANE_RE.search(evidence_text)
+    ):
+        errors.append("draft proposes replacing infrastructure the prospect already owns")
     if re.search(r"\bi noticed you are using gpus?\b", body, re.I) and "gpu" not in " ".join(draft["personalization_claims"]).lower():
         errors.append("GPU claims must be evidence-backed")
     project_terms = [
@@ -1515,7 +2623,8 @@ def write_drafts(
     scored: list[dict[str, Any]],
     notes: list[dict[str, Any]],
     use_qwen: bool,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
+    qwen_ready_override: bool | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool, dict[str, Any]]:
     threshold = int(os.getenv("FIT_SCORE_THRESHOLD", "70"))
     max_per_domain = int(os.getenv("MAX_DRAFTS_PER_DOMAIN", "2"))
     fallback_mode = os.getenv("LLM_FALLBACK_MODE", "template")
@@ -1525,11 +2634,29 @@ def write_drafts(
     failures: list[dict[str, Any]] = []
     domains: Counter[str] = Counter()
     fallback_used = False
-    qwen_ready = use_qwen and os.getenv("USE_LOCAL_LLM", "true").lower() == "true" and ensure_ollama(model)
+    metrics: dict[str, Any] = {
+        "requested_model": model if use_qwen else "template",
+        "model_invocation_attempted": False,
+        "model_invocation_succeeded": False,
+        "fallback_reason": "",
+        "primary_generated": 0,
+        "fallback_generated": 0,
+        "retries": 0,
+        "latency_ms": 0,
+    }
+    started = time.monotonic()
+    qwen_ready = (
+        qwen_ready_override
+        if qwen_ready_override is not None
+        else use_qwen
+        and os.getenv("USE_LOCAL_LLM", "true").lower() == "true"
+        and ensure_ollama(model)
+    )
     if use_qwen and not qwen_ready:
         if fallback_mode != "template":
             raise RuntimeError("Qwen/Ollama is unavailable and template fallback is disabled.")
         fallback_used = True
+        metrics["fallback_reason"] = "qwen_or_ollama_unavailable"
         LOG.warning("Qwen/Ollama unavailable; falling back to template mode.")
 
     seen_emails: set[str] = set()
@@ -1559,7 +2686,9 @@ def write_drafts(
         model_mode = "template"
         if qwen_ready:
             try:
+                metrics["model_invocation_attempted"] = True
                 generated = qwen_draft(prospect, note, model)
+                metrics["model_invocation_succeeded"] = generated is not None
                 model_mode = "qwen"
             except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError) as error:
                 LOG.warning("Qwen generation failed for %s: %s", prospect["prospect_id"], error)
@@ -1569,6 +2698,7 @@ def write_drafts(
                     )
                     continue
                 fallback_used = True
+                metrics["fallback_reason"] = str(error)
                 model_mode = "fallback"
         if generated is None:
             if qwen_ready and fallback_mode != "template":
@@ -1580,11 +2710,14 @@ def write_drafts(
             if use_qwen:
                 model_mode = "fallback"
                 fallback_used = True
+                if not metrics["fallback_reason"]:
+                    metrics["fallback_reason"] = "model_returned_skip_or_no_output"
         subject, body, claims = generated
         draft = build_draft_candidate(prospect, note, subject, body, claims, model_mode)
         errors = validate_draft(draft, max_per_domain, domains)
         if errors and qwen_ready and model_mode == "qwen" and fallback_mode == "template":
             fallback_used = True
+            metrics["fallback_reason"] = "primary_draft_failed_validation"
             subject, body, claims = template_draft(prospect, note)
             draft = build_draft_candidate(prospect, note, subject, body, claims, "fallback")
             errors = validate_draft(draft, max_per_domain, domains)
@@ -1593,8 +2726,30 @@ def write_drafts(
             continue
         domains[prospect["email"].split("@")[-1].lower()] += 1
         seen_emails.add(prospect["email"].lower())
+        if draft["model_mode"] == "qwen":
+            metrics["primary_generated"] += 1
+        elif draft["model_mode"] == "fallback":
+            metrics["fallback_generated"] += 1
         passed.append(draft)
-    return passed, failures, fallback_used
+    metrics["latency_ms"] = int((time.monotonic() - started) * 1000)
+    return passed, failures, fallback_used, metrics
+
+
+def health_counts(statuses: list[SourceHealth]) -> tuple[list[str], list[str], list[str], list[str]]:
+    enabled: list[str] = []
+    succeeded: list[str] = []
+    degraded: list[str] = []
+    failed: list[str] = []
+    for status in statuses:
+        if status.status != "disabled":
+            enabled.append(status.source_type)
+        if status.status == "healthy":
+            succeeded.append(status.source_type)
+        elif status.status == "degraded":
+            degraded.append(status.source_type)
+        elif status.status not in {"healthy", "disabled"}:
+            failed.append(status.source_type)
+    return enabled, succeeded, degraded, failed
 
 
 def write_json(output: Path, name: str, value: Any) -> None:
@@ -1612,20 +2767,125 @@ def run(args: argparse.Namespace) -> int:
         started = utc_now()
         output = Path(args.output)
         input_path = Path(args.input) if args.input else None
-        prospects, skipped = discover(args.target, input_path, args.category)
-        notes = research(prospects)
-        scored = score(prospects, notes)
+        campaign = configure_campaign(input_path)
+        registry = build_default_registry(source_registry_config())
+        sources_enabled, sources_succeeded, sources_degraded, sources_failed = health_counts(registry.health())
+        prospects, skipped, adapter_signals = discover(args.target, input_path, args.category, registry)
+        _, sources_succeeded, sources_degraded, sources_failed = health_counts(registry.health())
         use_qwen = args.job in {"write-emails-qwen", "full-run-qwen"}
+        model = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
+        fallback_mode = os.getenv("LLM_FALLBACK_MODE", "template")
+        semantic_ready = False
+        semantic_degraded = False
+        semantic_metrics: dict[str, Any] = {
+            "research_attempted": False,
+            "research_succeeded": False,
+            "qualification_attempted": False,
+            "qualification_succeeded": False,
+            "scoring_explanation_attempted": False,
+            "scoring_explanation_succeeded": False,
+            "angle_selection_attempted": False,
+            "angle_selection_succeeded": False,
+            "validation_attempted": False,
+            "validation_succeeded": False,
+            "failure_reason": "",
+        }
+        notes = research(prospects)
+        if use_qwen:
+            semantic_ready = (
+                os.getenv("USE_LOCAL_LLM", "true").lower() == "true" and ensure_ollama(model)
+            )
+            if not semantic_ready and fallback_mode != "template":
+                raise RuntimeError("Qwen/Ollama is unavailable for semantic pipeline stages.")
+            if not semantic_ready:
+                semantic_degraded = True
+                semantic_metrics["failure_reason"] = "qwen_or_ollama_unavailable"
+            if semantic_ready and prospects:
+                semantic_metrics.update(
+                    {
+                        "research_attempted": True,
+                        "qualification_attempted": True,
+                        "scoring_explanation_attempted": True,
+                        "angle_selection_attempted": True,
+                    }
+                )
+                try:
+                    analysis = qwen_semantic_analysis(prospects, notes, model)
+                    prospects, notes, semantic_exclusions = apply_semantic_analysis(
+                        prospects, notes, analysis
+                    )
+                    skipped.extend(semantic_exclusions)
+                    semantic_metrics.update(
+                        {
+                            "research_succeeded": True,
+                            "qualification_succeeded": True,
+                            "scoring_explanation_succeeded": True,
+                            "angle_selection_succeeded": True,
+                        }
+                    )
+                except (
+                    urllib.error.URLError,
+                    TimeoutError,
+                    json.JSONDecodeError,
+                    ValueError,
+                ) as error:
+                    if fallback_mode != "template":
+                        raise RuntimeError(f"Semantic analysis failed: {error}") from error
+                    semantic_degraded = True
+                    semantic_metrics["failure_reason"] = str(error)
+        scored = score(prospects, notes)
         drafts: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
         fallback_used = False
+        model_metrics: dict[str, Any] = {
+            "requested_model": "template",
+            "model_invocation_attempted": False,
+            "model_invocation_succeeded": False,
+            "fallback_reason": "",
+            "primary_generated": 0,
+            "fallback_generated": 0,
+            "retries": 0,
+            "latency_ms": 0,
+        }
         if args.job in {
             "write-emails-template",
             "write-emails-qwen",
             "full-run-template",
             "full-run-qwen",
         }:
-            drafts, failures, fallback_used = write_drafts(scored, notes, use_qwen)
+            drafts, failures, fallback_used, model_metrics = write_drafts(
+                scored,
+                notes,
+                use_qwen,
+                semantic_ready if use_qwen else None,
+            )
+        qwen_drafts = [draft for draft in drafts if draft.get("model_mode") == "qwen"]
+        if use_qwen and semantic_ready and qwen_drafts:
+            semantic_metrics["validation_attempted"] = True
+            try:
+                semantic_validation = qwen_semantic_validate_drafts(qwen_drafts, notes, model)
+                drafts, failures = apply_semantic_draft_validation(
+                    drafts, failures, semantic_validation
+                )
+                semantic_metrics["validation_succeeded"] = True
+                model_metrics["primary_generated"] = sum(
+                    draft.get("model_mode") == "qwen" for draft in drafts
+                )
+            except (
+                urllib.error.URLError,
+                TimeoutError,
+                json.JSONDecodeError,
+                ValueError,
+            ) as error:
+                if fallback_mode != "template":
+                    raise RuntimeError(f"Semantic draft validation failed: {error}") from error
+                semantic_degraded = True
+                semantic_metrics["failure_reason"] = str(error)
+                for draft in qwen_drafts:
+                    draft["validation_status"] = "manual_review_required"
+                    draft["validation_errors"] = [
+                        "semantic model validation was unavailable"
+                    ]
 
         public_prospects = [
             {
@@ -1636,26 +2896,143 @@ def run(args: argparse.Namespace) -> int:
             for row in prospects
         ]
         mode = "junglegrid-qwen" if use_qwen else "junglegrid-template"
+        fallback_only = use_qwen and fallback_used and model_metrics.get("primary_generated", 0) == 0
+        run_status = (
+            "degraded"
+            if fallback_only or semantic_degraded or sources_failed or sources_degraded
+            else "successful"
+        )
+        canonical_entity_ids = {
+            entity["entity_id"]
+            for prospect in prospects
+            for entity in prospect.get("canonical_entities", [])
+            if entity.get("entity_id")
+        }
+        canonical_relationship_count = sum(len(prospect.get("verified_relationships", [])) for prospect in prospects)
+        exclusion_reasons = Counter(
+            str(item.get("exclusion_rule_triggered") or item.get("skip_reason") or "unspecified")
+            for item in skipped
+        )
+        semantic_rejection_reasons = Counter(
+            str(error)
+            for failure in failures
+            for error in failure.get("errors", [])
+        )
+        nonzero_criteria = [
+            (row, criterion)
+            for row in scored
+            for criterion, value in row.get("score_breakdown", {}).items()
+            if value > 0
+        ]
+        criteria_with_evidence = sum(
+            bool(row.get("score_evidence_ids", {}).get(criterion))
+            for row, criterion in nonzero_criteria
+        )
+        contamination_candidates = sum(
+            item.get("exclusion_rule_triggered") == "contaminated_evidence" for item in skipped
+        )
+        duplicate_collapse_count = sum(
+            item.get("exclusion_rule_triggered") in {"duplicate", "memory_duplicate"}
+            or item.get("skip_reason") in {"duplicate", "memory_duplicate"}
+            for item in skipped
+        )
+        generated_count = int(model_metrics["primary_generated"]) + int(
+            model_metrics["fallback_generated"]
+        )
+        quality_metrics = {
+            "qualification_gate_pass_rate": round(
+                len(prospects) / max(1, len(prospects) + len(skipped)),
+                4,
+            ),
+            "contamination_rejection_rate": 1.0 if contamination_candidates else None,
+            "duplicate_collapse_count": duplicate_collapse_count,
+            "scored_criteria_with_evidence_ids_percentage": round(
+                (criteria_with_evidence / max(1, len(nonzero_criteria))) * 100,
+                2,
+            ),
+            "fallback_rate": round(
+                int(model_metrics["fallback_generated"]) / max(1, generated_count),
+                4,
+            ),
+            "semantic_rejection_reasons": dict(semantic_rejection_reasons),
+        }
+        execution_backend = os.getenv("OUTREACH_EXECUTION_BACKEND", "jungle_grid_mock")
+        contract = json.loads(os.getenv("OUTREACH_JOB_CONTRACT", "{}") or "{}")
         summary = {
+            "status": run_status,
             "job": args.job,
             "mode": mode,
             "target": args.target,
+            "workspace_id": campaign["workspaceId"],
+            "campaign_id": campaign["campaignId"],
+            "campaign_name": campaign["name"],
+            "offer_name": campaign["offer"]["name"],
+            "execution_backend": execution_backend,
+            "production_eligible": execution_backend == "jungle_grid",
+            "job_contract_schema_version": contract.get("schema_version", "1.0"),
+            "pipeline_stages": contract.get(
+                "pipeline_stages",
+                [
+                    "source_discovery",
+                    "prospect_research",
+                    "semantic_qualification",
+                    "entity_resolution",
+                    "prospect_scoring",
+                    "outreach_drafting",
+                    "semantic_validation",
+                ],
+            ),
+            "score_dimension_labels": {
+                "agentMcpRelevance": "campaign target relevance",
+                "aiWorkloadRelevance": "campaign workload relevance",
+                "infrastructurePain": "documented pain or operating need",
+                "openSourceActivity": "recent project activity",
+                "jungleGridComprehension": "offer integration compatibility",
+                "contactQuality": "contact provenance quality",
+            },
+            "sources_enabled": sources_enabled,
+            "sources_succeeded": sources_succeeded,
+            "sources_degraded": sources_degraded,
+            "sources_failed": sources_failed,
+            "exclusion_reasons": dict(exclusion_reasons),
+            "quality_metrics": quality_metrics,
+            "source_signals": adapter_signals[:100],
+            "discovered_raw": len(prospects) + len(skipped),
+            "deduplicated_entities": len(canonical_entity_ids) or len(prospects),
+            "canonical_relationships": canonical_relationship_count,
+            "qualified": len(prospects),
+            "excluded": len(skipped),
             "discovered": len(prospects),
             "researched": len(notes),
             "scored": len(scored),
+            "drafted": len(drafts),
             "drafts_passed": len(drafts),
             "drafts_failed": len(failures),
             "skipped": len(skipped) + len(failures),
             "fallback_used": fallback_used,
+            "requested_model": model_metrics["requested_model"],
+            "model_invocation_attempted": model_metrics["model_invocation_attempted"],
+            "model_invocation_succeeded": model_metrics["model_invocation_succeeded"],
+            "primary_model_generated": model_metrics["primary_generated"],
+            "fallback_generated": model_metrics["fallback_generated"],
+            "fallback_reason": model_metrics["fallback_reason"],
+            "semantic_stage_metrics": semantic_metrics,
+            "model_retries": model_metrics["retries"],
+            "model_latency_ms": model_metrics["latency_ms"],
             "model": os.getenv("OLLAMA_MODEL", "qwen2.5:3b") if use_qwen else "template",
             "started_at": started,
             "completed_at": utc_now(),
         }
+        status_counts = Counter(draft.get("validation_status", "manual_review_required") for draft in drafts)
         report = {
             "valid": True,
             "checked": len(drafts) + len(failures),
-            "passed": len(drafts),
+            "passed": int(status_counts.get("send_ready", 0)),
             "failed": len(failures),
+            "send_ready": int(status_counts.get("send_ready", 0)),
+            "manual_review_required": int(status_counts.get("manual_review_required", 0)),
+            "regeneration_required": int(status_counts.get("regeneration_required", 0)),
+            "excluded": len(skipped),
             "errors": failures,
             "skipped_prospects": skipped,
         }

@@ -57,7 +57,13 @@ type DraftInput = {
   links: string[];
   evidenceUrls: string[];
   personalizationClaims: string[];
-  validationStatus: "passed" | "failed";
+  validationStatus:
+    | "send_ready"
+    | "manual_review_required"
+    | "regeneration_required"
+    | "excluded"
+    | "passed"
+    | "failed";
   validationErrors: string[];
 };
 
@@ -65,6 +71,29 @@ type WorkerExclusions = {
   emails: string[];
   domains: string[];
   projectKeys: string[];
+};
+
+export type JungleGridExecutionRecord = {
+  id: string;
+  runId: string;
+  junglegridJobId: string | null;
+  workspaceId: string;
+  campaignId: string;
+  pipelineStage: string;
+  estimate: unknown;
+  executionPhase: string;
+  statusMessage: string | null;
+  submittedAt: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  retryCount: number;
+  logsCursor: string | null;
+  artifacts: unknown[];
+  failureReason: string | null;
+  workloadMetadata: Record<string, unknown>;
+  usage: unknown;
+  createdAt: string;
+  updatedAt: string;
 };
 
 function now(): string {
@@ -178,6 +207,31 @@ function mapRun(row: Record<string, unknown>): OutreachRun {
     startedAt: row.started_at,
     completedAt: row.completed_at,
   });
+}
+
+function mapJungleGridExecution(row: Record<string, unknown>): JungleGridExecutionRecord {
+  return {
+    id: String(row.id),
+    runId: String(row.run_id),
+    junglegridJobId: row.junglegrid_job_id ? String(row.junglegrid_job_id) : null,
+    workspaceId: String(row.workspace_id),
+    campaignId: String(row.campaign_id),
+    pipelineStage: String(row.pipeline_stage),
+    estimate: parseJson(row.estimate_json, null),
+    executionPhase: String(row.execution_phase),
+    statusMessage: row.status_message ? String(row.status_message) : null,
+    submittedAt: row.submitted_at ? String(row.submitted_at) : null,
+    startedAt: row.started_at ? String(row.started_at) : null,
+    completedAt: row.completed_at ? String(row.completed_at) : null,
+    retryCount: Number(row.retry_count ?? 0),
+    logsCursor: row.logs_cursor ? String(row.logs_cursor) : null,
+    artifacts: parseJson<unknown[]>(row.artifacts_json, []),
+    failureReason: row.failure_reason ? String(row.failure_reason) : null,
+    workloadMetadata: parseJson<Record<string, unknown>>(row.workload_metadata_json, {}),
+    usage: parseJson(row.usage_json, null),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
 }
 
 export class OutreachRepository {
@@ -638,8 +692,11 @@ export class OutreachRepository {
     if (!run) throw new Error("Run not found.");
     const next = { ...run, ...patch };
     const startedAt = run.startedAt ?? (next.phase !== "queued" ? now() : null);
-    const completedAt =
-      next.phase === "completed" || next.phase === "failed" ? run.completedAt ?? now() : null;
+    const completedAt = ["completed", "failed", "cancelled", "timed_out", "blocked"].includes(
+      next.phase,
+    )
+      ? run.completedAt ?? now()
+      : null;
     this.db
       .prepare(
         `UPDATE outreach_runs SET phase = ?, drafted_count = ?, failed_count = ?, notes = ?,
@@ -678,6 +735,124 @@ export class OutreachRepository {
       .run(runId, phase, level, message, metadata ? JSON.stringify(metadata) : null, now());
   }
 
+  createJungleGridExecution(input: {
+    runId: string;
+    workspaceId: string;
+    campaignId: string;
+    pipelineStage: string;
+    estimate?: unknown;
+    workloadMetadata?: Record<string, unknown>;
+  }): JungleGridExecutionRecord {
+    const id = randomUUID();
+    const timestamp = now();
+    this.db
+      .prepare(
+        `INSERT INTO junglegrid_jobs (
+          id, run_id, workspace_id, campaign_id, pipeline_stage, estimate_json,
+          execution_phase, artifacts_json, workload_metadata_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'preparing', '[]', ?, ?, ?)`,
+      )
+      .run(
+        id,
+        input.runId,
+        input.workspaceId,
+        input.campaignId,
+        input.pipelineStage,
+        input.estimate === undefined ? null : JSON.stringify(input.estimate),
+        JSON.stringify(input.workloadMetadata ?? {}),
+        timestamp,
+        timestamp,
+      );
+    return this.getJungleGridExecution(id)!;
+  }
+
+  updateJungleGridExecution(
+    id: string,
+    patch: Partial<
+      Pick<
+        JungleGridExecutionRecord,
+        | "junglegridJobId"
+        | "pipelineStage"
+        | "estimate"
+        | "executionPhase"
+        | "statusMessage"
+        | "submittedAt"
+        | "startedAt"
+        | "completedAt"
+        | "retryCount"
+        | "logsCursor"
+        | "artifacts"
+        | "failureReason"
+        | "workloadMetadata"
+        | "usage"
+      >
+    >,
+  ): JungleGridExecutionRecord {
+    const current = this.getJungleGridExecution(id);
+    if (!current) throw new Error("Jungle Grid execution record not found.");
+    const next = { ...current, ...patch };
+    this.db
+      .prepare(
+        `UPDATE junglegrid_jobs SET junglegrid_job_id = ?, pipeline_stage = ?, estimate_json = ?,
+         execution_phase = ?, status_message = ?, submitted_at = ?, started_at = ?,
+         completed_at = ?, retry_count = ?, logs_cursor = ?, artifacts_json = ?,
+         failure_reason = ?, workload_metadata_json = ?, usage_json = ?, updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(
+        next.junglegridJobId,
+        next.pipelineStage,
+        next.estimate === null ? null : JSON.stringify(next.estimate),
+        next.executionPhase,
+        next.statusMessage,
+        next.submittedAt,
+        next.startedAt,
+        next.completedAt,
+        next.retryCount,
+        next.logsCursor,
+        JSON.stringify(next.artifacts),
+        next.failureReason,
+        JSON.stringify(next.workloadMetadata),
+        next.usage === null ? null : JSON.stringify(next.usage),
+        now(),
+        id,
+      );
+    return this.getJungleGridExecution(id)!;
+  }
+
+  getJungleGridExecution(id: string): JungleGridExecutionRecord | null {
+    const row = this.db.prepare("SELECT * FROM junglegrid_jobs WHERE id = ?").get(id) as
+      | Record<string, unknown>
+      | undefined;
+    return row ? mapJungleGridExecution(row) : null;
+  }
+
+  getLatestJungleGridExecution(runId: string): JungleGridExecutionRecord | null {
+    const row = this.db
+      .prepare("SELECT * FROM junglegrid_jobs WHERE run_id = ? ORDER BY created_at DESC LIMIT 1")
+      .get(runId) as Record<string, unknown> | undefined;
+    return row ? mapJungleGridExecution(row) : null;
+  }
+
+  listJungleGridExecutions(runId: string): JungleGridExecutionRecord[] {
+    const rows = this.db
+      .prepare("SELECT * FROM junglegrid_jobs WHERE run_id = ? ORDER BY created_at ASC")
+      .all(runId) as Record<string, unknown>[];
+    return rows.map(mapJungleGridExecution);
+  }
+
+  listActiveJungleGridExecutions(): JungleGridExecutionRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM junglegrid_jobs
+         WHERE junglegrid_job_id IS NOT NULL
+           AND execution_phase NOT IN ('completed', 'failed', 'cancelled', 'timed_out', 'blocked')
+         ORDER BY created_at ASC`,
+      )
+      .all() as Record<string, unknown>[];
+    return rows.map(mapJungleGridExecution);
+  }
+
   linkRunProspect(runId: string, prospectId: string, outcome: string, reason?: string): void {
     this.db
       .prepare(
@@ -703,7 +878,14 @@ export class OutreachRepository {
     ).map(mapRun);
   }
 
-  getRunDetail(id: string): { run: OutreachRun; events: unknown[]; prospects: unknown[] } | null {
+  getRunDetail(
+    id: string,
+  ): {
+    run: OutreachRun;
+    events: unknown[];
+    prospects: unknown[];
+    executions: JungleGridExecutionRecord[];
+  } | null {
     const run = this.getRun(id);
     if (!run) return null;
     const events = this.db
@@ -718,6 +900,7 @@ export class OutreachRepository {
       .all(id) as Record<string, unknown>[];
     return {
       run,
+      executions: this.listJungleGridExecutions(id),
       events: events.map((event) => ({
         ...event,
         metadata: parseJson(event.metadata, null),
@@ -895,6 +1078,38 @@ export class OutreachRepository {
       )
       .get(domain, isoDate) as { count: number };
     return row.count;
+  }
+
+  pruneExpiredData(retentionDays: number): {
+    runsDeleted: number;
+    prospectsDeleted: number;
+    auditLogsDeleted: number;
+  } {
+    if (!Number.isInteger(retentionDays) || retentionDays <= 0) {
+      return { runsDeleted: 0, prospectsDeleted: 0, auditLogsDeleted: 0 };
+    }
+    const cutoff = new Date(Date.now() - retentionDays * 86_400_000).toISOString();
+    const transaction = this.db.transaction(() => {
+      const runs = this.db
+        .prepare(
+          `DELETE FROM outreach_runs
+           WHERE COALESCE(completed_at, created_at) < ?
+             AND phase IN ('completed', 'failed', 'cancelled', 'timed_out', 'blocked')`,
+        )
+        .run(cutoff);
+      const prospects = this.db
+        .prepare("DELETE FROM prospects WHERE updated_at < ?")
+        .run(cutoff);
+      const auditLogs = this.db
+        .prepare("DELETE FROM audit_logs WHERE created_at < ?")
+        .run(cutoff);
+      return {
+        runsDeleted: runs.changes,
+        prospectsDeleted: prospects.changes,
+        auditLogsDeleted: auditLogs.changes,
+      };
+    });
+    return transaction();
   }
 
   getSettings(): OutreachSettings {

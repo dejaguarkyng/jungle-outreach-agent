@@ -54,7 +54,7 @@ jobs:
             -v "$PWD/artifacts:/workspace/artifacts" \
             --entrypoint python \
             jungle-outreach-worker:smoke \
-            /app/outreach_worker.py \
+            /app/workers/outreach/outreach_worker.py \
             --job full-run-template \
             --target 2 \
             --output /workspace/artifacts \

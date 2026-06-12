@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "1.0",
+  "workspaceId": "example-workspace",
+  "campaignId": "generic-saas-observability",
+  "name": "Generic SaaS observability",
+  "offer": {
+    "name": "Trace Harbor",
+    "description": "Error monitoring and release diagnostics for small SaaS engineering teams.",
+    "url": "https://traceharbor.example",
+    "senderName": "Alex",
+    "signature": "Alex"
+  },
+  "idealCustomerProfile": {
+    "description": "Small SaaS and developer-tool teams operating public web services with recurring production errors.",
+    "categories": ["developer_tool", "saas", "data_platform"],
+    "targetTerms": ["saas", "api", "web service", "developer tool", "data platform"],
+    "workloadTerms": ["production service", "api requests", "release", "deployment", "web application"],
+    "executionTerms": ["logs", "errors", "exceptions", "trace", "monitoring"],
+    "painTerms": ["incident", "failure", "regression", "debug", "outage", "slow"],
+    "exclusionTerms": ["template", "awesome list", "tutorial", "example project"]
+  },
+  "qualification": {
+    "requireTargetSignal": true,
+    "requireWorkloadSignal": true,
+    "requireExecutionSignal": true,
+    "requirePainSignal": false,
+    "maximumActivityAgeDays": 180
+  },
+  "messaging": {
+    "positioning": "Trace Harbor can connect release changes to production errors without adding another large observability stack.",
+    "callToAction": "If release diagnostics are a current priority, the short overview is",
+    "subjectPrefix": "Trace Harbor and"
+  },
+  "execution": {
+    "researchModel": "qwen2.5:3b",
+    "scoringModel": "qwen2.5:3b",
+    "draftingModel": "qwen2.5:3b",
+    "validationModel": "qwen2.5:3b"
+  }
+}

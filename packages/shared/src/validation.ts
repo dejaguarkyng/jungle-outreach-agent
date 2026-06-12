@@ -1,5 +1,4 @@
 import {
-  ALLOWED_OUTREACH_LINKS,
   JUNGLEGRID_SITE,
   MAX_DRAFT_WORDS,
   MAX_SUBJECT_LENGTH,
@@ -33,10 +32,15 @@ export type DraftValidation = {
   errors: string[];
 };
 
-export function validateDraftContent(subject: string, body: string): DraftValidation {
+export function validateDraftContent(
+  subject: string,
+  body: string,
+  options: { allowedLink?: string } = {},
+): DraftValidation {
   const errors: string[] = [];
   const wordCount = countWords(body);
   const links = extractLinks(`${subject}\n${body}`);
+  const allowedLink = options.allowedLink ?? JUNGLEGRID_SITE;
 
   if (wordCount < MIN_DRAFT_WORDS || wordCount > MAX_DRAFT_WORDS) {
     errors.push(`Body must contain ${MIN_DRAFT_WORDS}-${MAX_DRAFT_WORDS} words; found ${wordCount}.`);
@@ -46,11 +50,11 @@ export function validateDraftContent(subject: string, body: string): DraftValida
   }
   if (links.length !== 1) {
     errors.push(`Draft must contain exactly 1 link; found ${links.length}.`);
-  } else if (links.some((link) => !ALLOWED_OUTREACH_LINKS.includes(link as (typeof ALLOWED_OUTREACH_LINKS)[number]))) {
-    errors.push(`Allowed links are: ${ALLOWED_OUTREACH_LINKS.join(", ")}.`);
+  } else if (links.some((link) => link !== allowedLink)) {
+    errors.push(`Allowed link is: ${allowedLink}.`);
   }
-  if (!links.includes(JUNGLEGRID_SITE)) {
-    errors.push(`Draft must include ${JUNGLEGRID_SITE}.`);
+  if (!links.includes(allowedLink)) {
+    errors.push(`Draft must include ${allowedLink}.`);
   }
   if (/<(?:a|script|style|html|body)\b/i.test(body) || trackingPattern.test(body)) {
     errors.push("HTML, tracking content, and tracking parameters are not allowed.");
@@ -72,14 +76,29 @@ function significantProjectTerms(project: string): string[] {
     .filter((term) => term.length >= 3 && !["github", "com", "the"].includes(term));
 }
 
-export function validateArtifactDraft(draft: ArtifactEmailDraft): string[] {
-  const errors = [...validateDraftContent(draft.subject, draft.body).errors];
+export function validateArtifactDraft(
+  draft: ArtifactEmailDraft,
+  options: { allowedLink?: string } = {},
+): string[] {
+  const errors = [...validateDraftContent(draft.subject, draft.body, options).errors];
   const calculatedWords = countWords(draft.body);
   if (draft.word_count !== calculatedWords) {
     errors.push(`word_count is ${draft.word_count}, but the body contains ${calculatedWords} words.`);
   }
-  if (draft.validation_status !== "passed" || draft.validation_errors.length > 0) {
-    errors.push("Worker marked the draft as failed.");
+  if (draft.validation_status === "passed") {
+    errors.push("Worker used legacy validation_status; semantic status is required.");
+  }
+  if (draft.validation_status === "failed" || draft.validation_status === "regeneration_required" || draft.validation_status === "excluded") {
+    errors.push("Worker marked the draft as not reviewable.");
+  }
+  if (draft.validation_status === "send_ready" && draft.validation_errors.length > 0) {
+    errors.push("send_ready drafts must not contain validation errors.");
+  }
+  if (draft.model_mode === "fallback" && draft.validation_status === "send_ready") {
+    errors.push("Fallback drafts require manual review and cannot be send_ready.");
+  }
+  if (draft.model_mode !== "fallback" && draft.validation_status === "manual_review_required" && draft.validation_errors.length === 0) {
+    errors.push("Manual-review drafts must explain the review reason.");
   }
   if (draft.evidence_urls.length === 0 || draft.personalization_claims.length === 0) {
     errors.push("Public evidence and personalization claims are required.");
@@ -99,7 +118,7 @@ export function validateArtifactDraft(draft: ArtifactEmailDraft): string[] {
 
 export function validateEmailDraftArtifact(
   input: unknown,
-  options: { fitScoreThreshold: number; maxPerDomain: number },
+  options: { fitScoreThreshold: number; maxPerDomain: number; allowedLink?: string },
 ): { valid: boolean; drafts: ArtifactEmailDraft[]; errors: string[] } {
   const parsed = emailDraftsArtifactSchema.safeParse(input);
   if (!parsed.success) {
@@ -127,7 +146,7 @@ export function validateEmailDraftArtifact(
     if (draft.fit_score < options.fitScoreThreshold) {
       errors.push(`[${index}] Fit score ${draft.fit_score} is below ${options.fitScoreThreshold}.`);
     }
-    for (const error of validateArtifactDraft(draft)) errors.push(`[${index}] ${error}`);
+    for (const error of validateArtifactDraft(draft, options)) errors.push(`[${index}] ${error}`);
   }
   return { valid: errors.length === 0, drafts: parsed.data, errors };
 }

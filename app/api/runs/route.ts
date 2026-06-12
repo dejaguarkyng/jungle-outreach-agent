@@ -13,6 +13,7 @@ const runRequestSchema = z.object({
   category: prospectCategorySchema.optional(),
   scoreThreshold: z.number().int().min(0).max(100).optional(),
   dryRun: z.boolean().default(true),
+  campaignId: z.string().trim().min(1).default("jungle-grid"),
 });
 
 export const dynamic = "force-dynamic";

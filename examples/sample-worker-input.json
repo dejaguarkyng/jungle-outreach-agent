@@ -8,9 +8,9 @@
       "email_source_type": "official_website",
       "project": "sample/agent-runtime",
       "project_url": "https://github.com/sample/agent-runtime",
-      "project_description": "An open-source runtime for durable agent jobs and tool execution.",
+      "project_description": "An open-source runtime for durable AI agent jobs and tool execution.",
       "category": "agent_compute",
-      "research_text": "Agent Runtime dispatches long-running tool jobs to isolated workers and preserves logs, retries, and output artifacts for review.",
+      "research_text": "Agent Runtime dispatches long-running AI agent jobs to isolated workers. It preserves logs, retries, and output artifacts for review. The project documents background worker execution for model and tool workloads.",
       "evidence_urls": [
         "https://github.com/sample/agent-runtime#readme"
       ],
@@ -29,7 +29,7 @@
       "project_url": "https://github.com/sample/mcp-worker",
       "project_description": "MCP tools that launch batch inference and data processing jobs.",
       "category": "mcp",
-      "research_text": "MCP Worker lets agent clients launch observable batch inference tasks and retrieve generated files when execution completes.",
+      "research_text": "MCP Worker lets agent clients launch observable batch inference tasks. It stores generated artifacts when execution completes. It retries failed worker jobs for long-running model workflows.",
       "evidence_urls": [
         "https://github.com/sample/mcp-worker#readme"
       ],

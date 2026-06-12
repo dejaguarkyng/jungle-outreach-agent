@@ -56,28 +56,43 @@ program
 
 program
   .command("research")
-  .option("--limit <number>", "maximum prospects to research", positiveInteger, 30)
-  .action(async (options) => {
-    const service = new OutreachService();
-    console.table([await service.research(options.limit)]);
-  });
+  .description("Legacy alias for a complete Jungle Grid Qwen pipeline run.")
+  .option("--limit <number>", "target validated drafts", positiveInteger, 30)
+  .option("--category <category>", "focus category")
+  .action((options) =>
+    executeRun("junglegrid-qwen", {
+      count: options.limit,
+      category: options.category,
+    }),
+  );
 
 program
   .command("score")
-  .option("--limit <number>", "maximum prospects to score", positiveInteger, 200)
-  .action((options) => console.table([new OutreachService().score(options.limit)]));
+  .description("Legacy alias for a complete Jungle Grid Qwen pipeline run.")
+  .option("--limit <number>", "target validated drafts", positiveInteger, 17)
+  .option("--category <category>", "focus category")
+  .action((options) =>
+    executeRun("junglegrid-qwen", {
+      count: options.limit,
+      category: options.category,
+    }),
+  );
 
 program
   .command("draft")
-  .option("--count <number>", "maximum approved prospects to draft", positiveInteger, 17)
-  .action(async (options) => {
-    const result = await new OutreachService().draftApproved(options.count, { dryRun: true });
-    console.table(result.rows);
-    console.log(`Local drafts ${result.drafted}; failed ${result.failed}.`);
-  });
+  .description("Legacy alias for a complete Jungle Grid Qwen pipeline run.")
+  .option("--count <number>", "target validated drafts", positiveInteger, 17)
+  .option("--category <category>", "focus category")
+  .action((options) =>
+    executeRun("junglegrid-qwen", {
+      count: options.count,
+      category: options.category,
+      dryRun: true,
+    }),
+  );
 
 for (const [command, mode, description] of [
-  ["run-local", "local-template", "Run the local deterministic template pipeline."],
+  ["run-local", "local-template", "Legacy alias for a Jungle Grid Qwen pipeline run."],
   ["run-junglegrid", "junglegrid-template", "Run the template worker on Jungle Grid."],
   ["run-junglegrid-qwen", "junglegrid-qwen", "Run the Qwen/Ollama worker on Jungle Grid."],
 ] as const) {

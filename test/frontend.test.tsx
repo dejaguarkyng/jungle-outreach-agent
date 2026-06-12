@@ -53,7 +53,7 @@ const draft: EmailDraft & { prospect: Prospect } = {
   links: ["https://junglegrid.dev"],
   evidenceUrls: [prospect.emailSourceUrl, "https://acme.dev/agent-runtime"],
   personalizationClaims: ["durable job queue"],
-  validationStatus: "passed",
+  validationStatus: "send_ready",
   validationErrors: [],
   approvalStatus: "pending_review",
   deliveryStatus: "not_sent",
@@ -86,7 +86,12 @@ describe("operator frontend", () => {
   });
 
   it("renders the bounded run creation form", () => {
-    render(<ManualRunForm defaults={{ targetCount: 17, scoreThreshold: 70, dryRun: true }} />);
+    render(
+      <ManualRunForm
+        campaigns={[{ id: "jungle-grid", name: "Jungle Grid AI execution", offer: "Jungle Grid" }]}
+        defaults={{ targetCount: 17, scoreThreshold: 70, dryRun: true }}
+      />,
+    );
     expect(screen.getByLabelText("Target count")).toHaveValue(17);
     expect(screen.getByText("Dry-run mode")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Review run/i })).toBeInTheDocument();

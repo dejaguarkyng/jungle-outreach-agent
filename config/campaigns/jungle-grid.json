@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "1.0",
+  "workspaceId": "default",
+  "campaignId": "jungle-grid",
+  "name": "Jungle Grid AI execution",
+  "offer": {
+    "name": "Jungle Grid",
+    "description": "Durable managed execution for inference, workers, retries, logs, and artifacts.",
+    "url": "https://junglegrid.dev",
+    "senderName": "Benedict",
+    "signature": "Benedict"
+  },
+  "idealCustomerProfile": {
+    "description": "Builders operating AI, agent, inference, training, GPU, or durable background workloads.",
+    "categories": ["agent_framework", "mcp", "ai_infrastructure", "inference_training", "agent_compute", "workflow_automation", "llm_application", "open_source_ai"],
+    "targetTerms": ["ai", "agent", "llm", "mcp", "inference", "training", "gpu", "model serving"],
+    "workloadTerms": ["inference", "training", "fine tuning", "gpu", "llm", "agentic", "batch ai"],
+    "executionTerms": ["worker", "background job", "long-running", "retry", "logs", "artifacts", "queue", "scheduler"],
+    "painTerms": ["timeout", "latency", "capacity", "memory", "cost", "scale", "deployment", "reliable"],
+    "exclusionTerms": ["queue data structure", "microtask", "polyfill", "shim", "browser utility"]
+  },
+  "qualification": {
+    "requireTargetSignal": true,
+    "requireWorkloadSignal": true,
+    "requireExecutionSignal": true,
+    "requirePainSignal": false,
+    "maximumActivityAgeDays": 180
+  },
+  "messaging": {
+    "positioning": "Jungle Grid can provide the durable execution layer behind those workloads, including retries, logs, and artifacts.",
+    "callToAction": "If that is a live problem for you, the shortest overview is",
+    "subjectPrefix": "Jungle Grid and"
+  },
+  "execution": {
+    "researchModel": "qwen2.5:3b",
+    "scoringModel": "qwen2.5:3b",
+    "draftingModel": "qwen2.5:3b",
+    "validationModel": "qwen2.5:3b"
+  }
+}

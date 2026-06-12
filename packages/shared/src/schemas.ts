@@ -1,6 +1,5 @@
 import { z } from "zod";
 import {
-  ALLOWED_OUTREACH_LINKS,
   JUNGLEGRID_SITE,
   MAX_DRAFT_WORDS,
   MAX_SUBJECT_LENGTH,
@@ -42,10 +41,58 @@ export const prospectCategories = [
   "inference_training",
   "open_source_ai",
   "agent_compute",
+  "developer_tool",
+  "data_platform",
+  "security",
+  "saas",
+  "other",
 ] as const;
 
 export const prospectCategorySchema = z.enum(prospectCategories);
 export type ProspectCategory = z.infer<typeof prospectCategorySchema>;
+
+export const campaignConfigurationSchema = z.object({
+  schemaVersion: z.literal("1.0"),
+  workspaceId: z.string().trim().min(1),
+  campaignId: z.string().trim().min(1),
+  name: z.string().trim().min(1),
+  offer: z.object({
+    name: z.string().trim().min(1),
+    description: z.string().trim().min(1),
+    url: z.string().url(),
+    senderName: z.string().trim().min(1),
+    signature: z.string().trim().min(1),
+  }),
+  idealCustomerProfile: z.object({
+    description: z.string().trim().min(1),
+    categories: z.array(prospectCategorySchema).min(1),
+    targetTerms: z.array(z.string().trim().min(1)).min(1),
+    workloadTerms: z.array(z.string().trim().min(1)).min(1),
+    executionTerms: z.array(z.string().trim().min(1)).default([]),
+    painTerms: z.array(z.string().trim().min(1)).default([]),
+    exclusionTerms: z.array(z.string().trim().min(1)).default([]),
+  }),
+  qualification: z.object({
+    requireTargetSignal: z.boolean().default(true),
+    requireWorkloadSignal: z.boolean().default(true),
+    requireExecutionSignal: z.boolean().default(false),
+    requirePainSignal: z.boolean().default(false),
+    maximumActivityAgeDays: z.number().int().min(1).max(3650).default(180),
+  }),
+  messaging: z.object({
+    positioning: z.string().trim().min(1),
+    callToAction: z.string().trim().min(1),
+    subjectPrefix: z.string().trim().min(1),
+  }),
+  execution: z.object({
+    researchModel: z.string().trim().min(1),
+    scoringModel: z.string().trim().min(1),
+    draftingModel: z.string().trim().min(1),
+    validationModel: z.string().trim().min(1),
+  }),
+});
+
+export type CampaignConfiguration = z.infer<typeof campaignConfigurationSchema>;
 
 export const scoreBreakdownSchema = z.object({
   agentMcpRelevance: z.number().int().min(0).max(20),
@@ -117,6 +164,19 @@ export const draftApprovalStatusSchema = z.enum(draftApprovalStatuses);
 export const draftDeliveryStatusSchema = z.enum(draftDeliveryStatuses);
 export type DraftApprovalStatus = z.infer<typeof draftApprovalStatusSchema>;
 export type DraftDeliveryStatus = z.infer<typeof draftDeliveryStatusSchema>;
+export const semanticValidationStatuses = [
+  "send_ready",
+  "manual_review_required",
+  "regeneration_required",
+  "excluded",
+] as const;
+export const legacyValidationStatuses = ["passed", "failed"] as const;
+export const draftValidationStatuses = [
+  ...semanticValidationStatuses,
+  ...legacyValidationStatuses,
+] as const;
+export const draftValidationStatusSchema = z.enum(draftValidationStatuses);
+export type DraftValidationStatus = z.infer<typeof draftValidationStatusSchema>;
 
 export const emailDraftSchema = z.object({
   id: z.string(),
@@ -131,7 +191,7 @@ export const emailDraftSchema = z.object({
   links: z.array(z.string().url()),
   evidenceUrls: z.array(z.string().url()),
   personalizationClaims: z.array(z.string().min(1)),
-  validationStatus: z.enum(["passed", "failed"]),
+  validationStatus: draftValidationStatusSchema,
   validationErrors: z.array(z.string()),
   approvalStatus: draftApprovalStatusSchema,
   deliveryStatus: draftDeliveryStatusSchema,
@@ -171,25 +231,84 @@ export const artifactEmailDraftSchema = z.object({
   subject: z.string().trim().min(1).max(MAX_SUBJECT_LENGTH),
   body: z.string().trim().min(1),
   word_count: z.number().int().min(MIN_DRAFT_WORDS).max(MAX_DRAFT_WORDS),
-  links: z
-    .array(z.enum(ALLOWED_OUTREACH_LINKS))
-    .min(1)
-    .max(ALLOWED_OUTREACH_LINKS.length)
-    .refine((links) => links.includes(JUNGLEGRID_SITE), {
-      message: `links must include ${JUNGLEGRID_SITE}`,
-    }),
+  links: z.array(z.string().url()).length(1),
   evidence_urls: z.array(z.string().url()).min(1),
   personalization_claims: z.array(z.string().trim().min(1)).min(1),
   model_mode: modelModeSchema,
-  validation_status: z.enum(["passed", "failed"]),
+  validation_status: draftValidationStatusSchema,
   validation_errors: z.array(z.string()),
 });
 
 export type ArtifactEmailDraft = z.infer<typeof artifactEmailDraftSchema>;
 export const emailDraftsArtifactSchema = z.array(artifactEmailDraftSchema);
 
+export const canonicalEntitySchema = z.object({
+  entity_id: z.string().min(1),
+  entity_type: z.enum([
+    "person",
+    "project",
+    "repository",
+    "company",
+    "domain",
+    "package",
+    "model",
+    "social_profile",
+    "source_document",
+    "contact_point",
+  ]),
+  canonical_name: z.string(),
+  aliases: z.array(z.string()),
+  source_specific_ids: z.record(z.string()),
+  confidence: z.number().min(0).max(1),
+});
+
+export const canonicalRelationshipSchema = z.object({
+  relationship_type: z.string().min(1),
+  from_entity_id: z.string().min(1),
+  to_entity_id: z.string().min(1),
+  confidence: z.number().min(0).max(1),
+  evidence_ids: z.array(z.string()),
+});
+
+export const conflictingClaimSchema = z.object({
+  claim: z.string().min(1),
+  values: z.array(z.string()).min(1),
+  resolution: z.string().min(1),
+  confidence: z.number().min(0).max(1),
+});
+
+export const structuredEvidenceSchema = z.object({
+  evidence_id: z.string().min(1),
+  entity_id: z.string().min(1),
+  claim_type: z.enum([
+    "ai_workload",
+    "target_workload",
+    "infrastructure_pain",
+    "activity",
+    "role",
+    "contact",
+    "why_now",
+    "integration_surface",
+    "product_fit",
+  ]),
+  claim: z.string().min(1),
+  source_url: z.string().url(),
+  source_type: z.string().min(1),
+  source_authority: z.number().min(0).max(1),
+  published_at: z.string().nullable(),
+  retrieved_at: z.string(),
+  directness: z.enum(["direct", "strong_inference", "weak_inference"]),
+  freshness: z.number().min(0).max(1),
+  independence_group: z.string().min(1),
+  content_hash: z.string().min(1),
+  clean: z.boolean(),
+});
+
 export const artifactProspectSchema = z.object({
   prospect_id: z.string().min(1),
+  schema_version: z.string().optional(),
+  entity_id: z.string().optional(),
+  canonical_entity_id: z.string().optional(),
   name: z.string().min(1),
   email: z.string().email(),
   email_source_url: z.string().url(),
@@ -201,13 +320,31 @@ export const artifactProspectSchema = z.object({
     "package_page",
   ]),
   project: z.string().min(1),
+  project_key: z.string().optional(),
   project_url: z.string().url(),
   project_description: z.string().default(""),
   category: prospectCategorySchema,
+  canonical_entities: z.array(canonicalEntitySchema).optional(),
+  verified_relationships: z.array(canonicalRelationshipSchema).optional(),
+  conflicting_claims: z.array(conflictingClaimSchema).optional(),
+  contact_provenance: z
+    .object({
+      value: z.string(),
+      source_url: z.string().url(),
+      source_type: z.string(),
+      publicly_listed: z.boolean(),
+      person_project_match: z.string(),
+      verification_method: z.string(),
+      confidence: z.number().min(0).max(1),
+      collected_at: z.string(),
+      appropriate_use_category: z.string(),
+    })
+    .optional(),
 });
 
 export const researchArtifactSchema = z.object({
   prospect_id: z.string().min(1),
+  entity_id: z.string().optional(),
   summary: z.string().min(1),
   personalization_detail: z.string().min(1),
   junglegrid_relevance: z.string().min(1),
@@ -215,33 +352,111 @@ export const researchArtifactSchema = z.object({
   evidence_strength: z.number().min(0).max(1),
   evidence_points: z.array(z.string().min(1)).optional(),
   pain_signals: z.array(z.string().min(1)).optional(),
+  evidence: z.array(structuredEvidenceSchema).optional(),
+  semantic_research_analysis: z.string().min(1).optional(),
+  semantic_qualification_reason: z.string().min(1).optional(),
+  semantic_score_explanation: z.string().min(1).optional(),
+  semantic_suggested_angle: z.string().min(1).optional(),
 });
 
 export const scoredProspectArtifactSchema = artifactProspectSchema.extend({
   fit_score: z.number().int().min(0).max(100),
   score_breakdown: scoreBreakdownSchema,
   evidence_strength: z.number().min(0).max(1).optional(),
+  evidence: z.array(structuredEvidenceSchema).optional(),
+  score_evidence_ids: z.record(z.array(z.string())).optional(),
   contact_quality: z.number().int().min(0).max(10).optional(),
   evidence_points: z.array(z.string().min(1)).optional(),
   why_this_person: z.string().min(1).optional(),
   why_now: z.string().min(1).optional(),
   concrete_pain_signal: z.string().min(1).optional(),
   suggested_angle: z.string().min(1).optional(),
+  score_explanation: z.string().min(1).optional(),
   outreach_priority: z.enum(["high", "medium", "low"]).optional(),
   excluded: z.boolean().optional(),
 });
 
 export const runSummaryArtifactSchema = z.object({
+  status: z.enum(["successful", "degraded", "failed"]).optional(),
   job: workerJobSchema,
   mode: outreachModeSchema,
   target: z.number().int().positive(),
+  workspace_id: z.string().optional(),
+  campaign_id: z.string().optional(),
+  campaign_name: z.string().optional(),
+  offer_name: z.string().optional(),
+  execution_backend: z.enum(["jungle_grid", "jungle_grid_mock"]).optional(),
+  production_eligible: z.boolean().optional(),
+  score_dimension_labels: z.record(z.string()).optional(),
+  job_contract_schema_version: z.string().optional(),
+  pipeline_stages: z.array(z.string()).optional(),
+  sources_enabled: z.array(z.string()).optional(),
+  sources_succeeded: z.array(z.string()).optional(),
+  sources_degraded: z.array(z.string()).optional(),
+  sources_failed: z.array(z.string()).optional(),
+  exclusion_reasons: z.record(z.number().int().nonnegative()).optional(),
+  quality_metrics: z
+    .object({
+      qualification_gate_pass_rate: z.number().min(0).max(1),
+      contamination_rejection_rate: z.number().min(0).max(1).nullable(),
+      duplicate_collapse_count: z.number().int().nonnegative(),
+      scored_criteria_with_evidence_ids_percentage: z.number().min(0).max(100),
+      fallback_rate: z.number().min(0).max(1),
+      semantic_rejection_reasons: z.record(z.number().int().nonnegative()),
+    })
+    .optional(),
+  source_signals: z
+    .array(
+      z.object({
+        source_type: z.string(),
+        source_id: z.string().optional(),
+        url: z.string().url().optional(),
+        title: z.string().optional(),
+        evidence_count: z.number().int().nonnegative().optional(),
+        repository_url: z.string().optional(),
+        official_url: z.string().optional(),
+        independence_groups: z.array(z.string()).optional(),
+        status: z.string().optional(),
+        error: z.string().optional(),
+      }),
+    )
+    .optional(),
+  discovered_raw: z.number().int().nonnegative().optional(),
+  deduplicated_entities: z.number().int().nonnegative().optional(),
+  canonical_relationships: z.number().int().nonnegative().optional(),
+  qualified: z.number().int().nonnegative().optional(),
+  excluded: z.number().int().nonnegative().optional(),
   discovered: z.number().int().nonnegative(),
   researched: z.number().int().nonnegative(),
   scored: z.number().int().nonnegative(),
+  drafted: z.number().int().nonnegative().optional(),
   drafts_passed: z.number().int().nonnegative(),
   drafts_failed: z.number().int().nonnegative(),
   skipped: z.number().int().nonnegative(),
   fallback_used: z.boolean(),
+  requested_model: z.string().optional(),
+  model_invocation_attempted: z.boolean().optional(),
+  model_invocation_succeeded: z.boolean().optional(),
+  primary_model_generated: z.number().int().nonnegative().optional(),
+  fallback_generated: z.number().int().nonnegative().optional(),
+  fallback_reason: z.string().optional(),
+  semantic_stage_metrics: z
+    .object({
+      research_attempted: z.boolean(),
+      research_succeeded: z.boolean(),
+      qualification_attempted: z.boolean(),
+      qualification_succeeded: z.boolean(),
+      scoring_explanation_attempted: z.boolean(),
+      scoring_explanation_succeeded: z.boolean(),
+      angle_selection_attempted: z.boolean(),
+      angle_selection_succeeded: z.boolean(),
+      validation_attempted: z.boolean(),
+      validation_succeeded: z.boolean(),
+      failure_reason: z.string(),
+    })
+    .optional(),
+  model_retries: z.number().int().nonnegative().optional(),
+  model_latency_ms: z.number().int().nonnegative().optional(),
   model: z.string(),
   started_at: z.string(),
   completed_at: z.string(),
@@ -252,6 +467,10 @@ export const validationReportArtifactSchema = z.object({
   checked: z.number().int().nonnegative(),
   passed: z.number().int().nonnegative(),
   failed: z.number().int().nonnegative(),
+  send_ready: z.number().int().nonnegative().optional(),
+  manual_review_required: z.number().int().nonnegative().optional(),
+  regeneration_required: z.number().int().nonnegative().optional(),
+  excluded: z.number().int().nonnegative().optional(),
   errors: z.array(
     z.object({
       prospect_id: z.string(),
@@ -273,6 +492,11 @@ export type ArtifactBundle = z.infer<typeof artifactBundleSchema>;
 
 export const runPhases = [
   "queued",
+  "preparing",
+  "estimating",
+  "submitting",
+  "starting",
+  "running",
   "discovering",
   "researching",
   "scoring",
@@ -281,6 +505,9 @@ export const runPhases = [
   "downloading_artifacts",
   "completed",
   "failed",
+  "cancelled",
+  "timed_out",
+  "blocked",
 ] as const;
 
 export const runSchema = z.object({

@@ -2,6 +2,7 @@ import { getEnv, type AppEnv } from "@/src/config/env";
 import {
   requiredArtifactNames,
   type ArtifactBundle,
+  type CampaignConfiguration,
   type OutreachMode,
 } from "@/packages/shared/src";
 
@@ -43,6 +44,14 @@ export type JungleGridLogEntry = {
   message?: string;
 };
 
+export type JungleGridJobEvent = {
+  created_at?: string;
+  type?: string;
+  phase?: string;
+  message?: string;
+  metadata?: Record<string, unknown>;
+};
+
 type WorkerExclusions = {
   emails: string[];
   domains: string[];
@@ -56,7 +65,7 @@ function isTerminal(status: string): boolean {
 }
 
 function workerJobForMode(mode: OutreachMode): "full-run-template" | "full-run-qwen" {
-  return mode === "junglegrid-qwen" ? "full-run-qwen" : "full-run-template";
+  return mode === "junglegrid-template" ? "full-run-template" : "full-run-qwen";
 }
 
 export class JungleGridApiError extends Error {
@@ -105,8 +114,17 @@ export class JungleGridWorkloadProvider {
     }
   }
 
-  async estimate(mode: OutreachMode, target: number, exclusions?: WorkerExclusions): Promise<unknown> {
-    return this.request("POST", "/v1/jobs/estimate", this.buildJobPayload(mode, target, undefined, exclusions));
+  async estimate(
+    mode: OutreachMode,
+    target: number,
+    exclusions?: WorkerExclusions,
+    campaign?: CampaignConfiguration,
+  ): Promise<unknown> {
+    return this.request(
+      "POST",
+      "/v1/jobs/estimate",
+      this.buildJobPayload(mode, target, undefined, exclusions, campaign),
+    );
   }
 
   async submit(
@@ -114,11 +132,9 @@ export class JungleGridWorkloadProvider {
     target: number,
     category?: string,
     exclusions?: WorkerExclusions,
+    campaign?: CampaignConfiguration,
   ): Promise<JungleGridJob> {
-    if (mode === "local-template") {
-      throw new Error("local-template does not submit a Jungle Grid job.");
-    }
-    const payload = this.buildJobPayload(mode, target, category, exclusions);
+    const payload = this.buildJobPayload(mode, target, category, exclusions, campaign);
     return this.request<JungleGridJob>("POST", "/v1/jobs", payload);
   }
 
@@ -126,12 +142,26 @@ export class JungleGridWorkloadProvider {
     return this.request("GET", `/v1/jobs/${encodeURIComponent(jobId)}`);
   }
 
-  async getLogs(jobId: string): Promise<JungleGridLogEntry[]> {
+  async getEvents(jobId: string): Promise<JungleGridJobEvent[]> {
+    const payload = await this.request<{
+      items?: JungleGridJobEvent[];
+      events?: JungleGridJobEvent[];
+    }>("GET", `/v1/jobs/${encodeURIComponent(jobId)}/events?limit=1000`);
+    return payload.items ?? payload.events ?? [];
+  }
+
+  async getLogs(jobId: string, cursor?: string): Promise<JungleGridLogEntry[]> {
+    const query = new URLSearchParams({ limit: "1000" });
+    if (cursor) query.set("cursor", cursor);
     const payload = await this.request<{
       items?: JungleGridLogEntry[];
       logs?: JungleGridLogEntry[];
-    }>(`GET`, `/v1/jobs/${encodeURIComponent(jobId)}/logs?limit=1000`);
+    }>(`GET`, `/v1/jobs/${encodeURIComponent(jobId)}/logs?${query.toString()}`);
     return payload.items ?? payload.logs ?? [];
+  }
+
+  async cancelJob(jobId: string): Promise<void> {
+    await this.request("POST", `/v1/jobs/${encodeURIComponent(jobId)}/cancel`);
   }
 
   async listArtifacts(jobId: string): Promise<JungleGridArtifact[]> {
@@ -205,11 +235,12 @@ export class JungleGridWorkloadProvider {
     target: number,
     category?: string,
     exclusions?: WorkerExclusions,
+    campaign?: CampaignConfiguration,
   ) {
     const workerJob = workerJobForMode(mode);
     const command = [
       "python",
-      "/app/outreach_worker.py",
+      "/app/workers/outreach/outreach_worker.py",
       "--job",
       workerJob,
       "--target",
@@ -218,6 +249,47 @@ export class JungleGridWorkloadProvider {
       "/workspace/artifacts",
     ];
     if (category) command.push("--category", category);
+    const jobContract = {
+      schema_version: "1.0",
+      workspace_id: campaign?.workspaceId ?? "default",
+      campaign_id: campaign?.campaignId ?? "jungle-grid",
+      pipeline_stage: "full_pipeline",
+      pipeline_stages: [
+        "source_discovery",
+        "prospect_research",
+        "semantic_qualification",
+        "entity_resolution",
+        "prospect_scoring",
+        "outreach_drafting",
+        "semantic_validation",
+      ],
+      campaign_configuration: campaign ?? null,
+      evidence_policy: {
+        clean_content_required: true,
+        public_contact_provenance_required: true,
+        evidence_ids_required_for_scoring: true,
+      },
+      execution: {
+        backend: "jungle_grid",
+        batching: {
+          research_batch_size: this.env.JUNGLEGRID_RESEARCH_BATCH_SIZE,
+          scoring_batch_size: this.env.JUNGLEGRID_SCORING_BATCH_SIZE,
+          drafting_batch_size: this.env.JUNGLEGRID_DRAFTING_BATCH_SIZE,
+          validation_batch_size: this.env.JUNGLEGRID_VALIDATION_BATCH_SIZE,
+        },
+        concurrency: {
+          maximum_active_jobs: this.env.JUNGLEGRID_MAXIMUM_ACTIVE_JOBS,
+        },
+        retries: {
+          maximum_attempts: this.env.JUNGLEGRID_MAXIMUM_ATTEMPTS,
+          backoff_seconds: this.env.JUNGLEGRID_RETRY_BACKOFF_SECONDS,
+        },
+      },
+      output_contract: {
+        format: "json",
+        artifacts: requiredArtifactNames,
+      },
+    };
     return {
       name: `jungle-outreach-${workerJob}-${Date.now()}`,
       workload_type: this.env.JUNGLEGRID_DEFAULT_WORKLOAD_TYPE,
@@ -231,21 +303,32 @@ export class JungleGridWorkloadProvider {
       model_size_gb: mode === "junglegrid-qwen" ? 3 : 1,
       optimize_for: this.env.JUNGLEGRID_OPTIMIZE_FOR,
       environment: {
-        OLLAMA_MODEL: this.env.OLLAMA_MODEL,
+        OLLAMA_MODEL: campaign?.execution.draftingModel ?? this.env.OLLAMA_MODEL,
         OLLAMA_HOST: this.env.OLLAMA_HOST,
-        USE_LOCAL_LLM: String(this.env.USE_LOCAL_LLM),
-        LLM_FALLBACK_MODE: this.env.LLM_FALLBACK_MODE,
+        USE_LOCAL_LLM: "true",
+        LLM_FALLBACK_MODE: "disabled",
         FIT_SCORE_THRESHOLD: String(this.env.FIT_SCORE_THRESHOLD),
         MAX_DRAFTS_PER_DOMAIN: String(this.env.MAX_DRAFTS_PER_DOMAIN),
         GITHUB_TOKEN: this.env.GITHUB_TOKEN ?? "",
         OUTREACH_EXCLUDED_EMAILS: JSON.stringify(exclusions?.emails ?? []),
         OUTREACH_EXCLUDED_DOMAINS: JSON.stringify(exclusions?.domains ?? []),
         OUTREACH_EXCLUDED_PROJECT_KEYS: JSON.stringify(exclusions?.projectKeys ?? []),
+        OUTREACH_CAMPAIGN_CONFIG: campaign ? JSON.stringify(campaign) : "",
+        OUTREACH_EXECUTION_BACKEND: "jungle_grid",
+        OUTREACH_JOB_CONTRACT: JSON.stringify(jobContract),
       },
       expected_artifacts: requiredArtifactNames.map((name) => `/workspace/artifacts/${name}`),
       metadata: {
         application: "jungle-outreach-agent",
         mode,
+        execution_backend: "jungle_grid",
+        schema_version: "1.0",
+        workspace_id: campaign?.workspaceId ?? "default",
+        campaign_id: campaign?.campaignId ?? "jungle-grid",
+        campaign_name: campaign?.name ?? "Jungle Grid AI execution",
+        workload_models: campaign?.execution,
+        job_contract_schema_version: jobContract.schema_version,
+        pipeline_stages: jobContract.pipeline_stages,
         safety: "draft-only",
       },
     };

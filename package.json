@@ -5,6 +5,7 @@
   "license": "Apache-2.0",
   "description": "Local-first outreach research, internal draft review, and manually approved ZeptoMail sending agent for Jungle Grid.",
   "scripts": {
+    "setup": "./scripts/setup.sh",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",

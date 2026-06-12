@@ -132,7 +132,7 @@ export class OutreachService {
           links: extractLinks(`${copy.subject}\n${copy.body}`),
           evidenceUrls,
           personalizationClaims: [research.personalizationDetail],
-          validationStatus: "passed",
+          validationStatus: "send_ready",
           validationErrors: [],
         });
         drafted++;
@@ -156,7 +156,7 @@ export class OutreachService {
 
   approveDraft(localDraftId: string, approvedBy = "operator"): EmailDraft {
     const draft = this.getSendableDraft(localDraftId);
-    if (draft.validationStatus !== "passed" || draft.validationErrors.length > 0) {
+    if (draft.validationStatus !== "send_ready" || draft.validationErrors.length > 0) {
       throw new Error("Draft validation must pass before approval.");
     }
     return this.repository.setDraftApproval(localDraftId, "approved", approvedBy);
@@ -239,7 +239,7 @@ export class OutreachService {
     ) {
       throw new Error("Contact is blocked or suppressed.");
     }
-    if (draft.validationStatus !== "passed" || draft.validationErrors.length > 0) {
+    if (draft.validationStatus !== "send_ready" || draft.validationErrors.length > 0) {
       throw new Error("Draft validation failed.");
     }
     if (!draft.evidenceUrls.length || !draft.personalizationClaims.length || !prospect.emailSourceUrl) {

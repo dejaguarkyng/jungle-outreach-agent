@@ -18,6 +18,23 @@ If that is a live problem for you, the shortest overview is https://junglegrid.d
 
 Benedict`;
 
+const evidence = {
+  evidence_id: "ev-runtime",
+  entity_id: "project:sample-agent-runtime",
+  claim_type: "ai_workload" as const,
+  claim: "The durable worker queue preserves logs and output artifacts.",
+  source_url: "https://github.com/sample/agent-runtime#readme",
+  source_type: "repository_readme",
+  source_authority: 0.95,
+  published_at: null,
+  retrieved_at: new Date().toISOString(),
+  directness: "direct" as const,
+  freshness: 1,
+  independence_group: "github-readme",
+  content_hash: "hash-runtime",
+  clean: true,
+};
+
 function draft(overrides: Partial<ArtifactEmailDraft> = {}): ArtifactEmailDraft {
   return {
     prospect_id: "p1",
@@ -37,7 +54,7 @@ function draft(overrides: Partial<ArtifactEmailDraft> = {}): ArtifactEmailDraft 
     ],
     personalization_claims: ["the durable worker queue preserves logs and output artifacts"],
     model_mode: "qwen",
-    validation_status: "passed",
+    validation_status: "send_ready",
     validation_errors: [],
     ...overrides,
   };
@@ -52,10 +69,40 @@ function bundle(emailDrafts = [draft()]): ArtifactBundle {
         email: "avery@agent-runtime.dev",
         email_source_url: "https://agent-runtime.dev/contact",
         email_source_type: "official_website",
+        entity_id: "project:sample-agent-runtime",
+        canonical_entity_id: "project:sample-agent-runtime",
         project: "sample/agent-runtime",
         project_url: "https://github.com/sample/agent-runtime",
         project_description: "Durable agent jobs.",
         category: "agent_compute",
+        canonical_entities: [
+          {
+            entity_id: "project:sample-agent-runtime",
+            entity_type: "project",
+            canonical_name: "sample/agent-runtime",
+            aliases: ["sample/agent-runtime", "agent-runtime"],
+            source_specific_ids: { github: "sample/agent-runtime" },
+            confidence: 0.95,
+          },
+          {
+            entity_id: "person:avery",
+            entity_type: "person",
+            canonical_name: "Avery",
+            aliases: ["Avery"],
+            source_specific_ids: { email: "avery@agent-runtime.dev" },
+            confidence: 0.8,
+          },
+        ],
+        verified_relationships: [
+          {
+            relationship_type: "person_reachable_for_project",
+            from_entity_id: "person:avery",
+            to_entity_id: "project:sample-agent-runtime",
+            confidence: 0.8,
+            evidence_ids: ["ev-runtime"],
+          },
+        ],
+        conflicting_claims: [],
       },
     ],
     research_notes: [
@@ -74,6 +121,7 @@ function bundle(emailDrafts = [draft()]): ArtifactBundle {
           "https://github.com/sample/agent-runtime#readme",
         ],
         evidence_strength: 0.9,
+        evidence: [evidence],
       },
     ],
     scored_prospects: [
@@ -97,6 +145,11 @@ function bundle(emailDrafts = [draft()]): ArtifactBundle {
           contactQuality: 7,
         },
         evidence_strength: 0.9,
+        evidence: [evidence],
+        score_evidence_ids: {
+          agentMcpRelevance: ["ev-runtime"],
+          aiWorkloadRelevance: ["ev-runtime"],
+        },
         contact_quality: 7,
         evidence_points: [
           "durable worker queue preserves logs",
@@ -122,6 +175,9 @@ function bundle(emailDrafts = [draft()]): ArtifactBundle {
       drafts_failed: 0,
       skipped: 0,
       fallback_used: false,
+      status: "successful",
+      primary_model_generated: 1,
+      fallback_generated: 0,
       model: "qwen2.5:3b",
       started_at: new Date().toISOString(),
       completed_at: new Date().toISOString(),
@@ -140,6 +196,37 @@ describe("worker artifact validation", () => {
   it("accepts a complete evidence-bound bundle", () => {
     expect(
       validateArtifactBundle(bundle(), { fitScoreThreshold: 70, maxPerDomain: 2 }),
+    ).toBeTruthy();
+  });
+
+  it("fails closed when a production Qwen bundle omits semantic stage execution", () => {
+    const invalid = bundle();
+    invalid.run_summary.execution_backend = "jungle_grid";
+    invalid.run_summary.production_eligible = true;
+    expect(() =>
+      validateArtifactBundle(invalid, { fitScoreThreshold: 70, maxPerDomain: 2 }),
+    ).toThrow(/must complete research, qualification/);
+  });
+
+  it("validates the selected campaign offer URL instead of hardcoding Jungle Grid", () => {
+    const genericBody = body
+      .replaceAll("Jungle Grid", "Trace Harbor")
+      .replace("https://junglegrid.dev", "https://traceharbor.example");
+    const generic = bundle([
+      draft({
+        category: "developer_tool",
+        subject: "Trace Harbor and agent-runtime",
+        body: genericBody,
+        word_count: genericBody.trim().split(/\s+/).length,
+        links: ["https://traceharbor.example"],
+      }),
+    ]);
+    generic.prospects[0].category = "developer_tool";
+    generic.scored_prospects[0].category = "developer_tool";
+    generic.run_summary.campaign_id = "generic-saas-observability";
+    generic.run_summary.offer_name = "Trace Harbor";
+    expect(
+      validateArtifactBundle(generic, { fitScoreThreshold: 70, maxPerDomain: 2 }),
     ).toBeTruthy();
   });
 
@@ -165,5 +252,49 @@ describe("worker artifact validation", () => {
     expect(() =>
       validateArtifactBundle(invalid, { fitScoreThreshold: 70, maxPerDomain: 2 }),
     ).toThrow(/marked.*invalid/);
+  });
+
+  it("rejects canonical relationships that reference unknown evidence", () => {
+    const invalid = bundle();
+    invalid.prospects[0].verified_relationships![0].evidence_ids = ["ev-missing"];
+    expect(() =>
+      validateArtifactBundle(invalid, { fitScoreThreshold: 70, maxPerDomain: 2 }),
+    ).toThrow(/relationship references unknown evidence/);
+  });
+
+  it("accepts degraded fallback drafts only as manual review", () => {
+    const fallback = draft({
+      model_mode: "fallback",
+      validation_status: "manual_review_required",
+      validation_errors: ["fallback generation requires manual review"],
+    });
+    const degraded = bundle([fallback]);
+    degraded.run_summary.fallback_used = true;
+    degraded.run_summary.status = "degraded";
+    degraded.run_summary.primary_model_generated = 0;
+    degraded.run_summary.fallback_generated = 1;
+    degraded.run_summary.drafts_passed = 0;
+    degraded.validation_report.passed = 0;
+    degraded.validation_report.send_ready = 0;
+    degraded.validation_report.manual_review_required = 1;
+    expect(
+      validateArtifactBundle(degraded, { fitScoreThreshold: 70, maxPerDomain: 2 }),
+    ).toBeTruthy();
+  });
+
+  it("rejects fallback-only qwen runs reported as successful", () => {
+    const fallback = draft({
+      model_mode: "fallback",
+      validation_status: "send_ready",
+      validation_errors: [],
+    });
+    const degraded = bundle([fallback]);
+    degraded.run_summary.fallback_used = true;
+    degraded.run_summary.status = "successful";
+    degraded.run_summary.primary_model_generated = 0;
+    degraded.run_summary.fallback_generated = 1;
+    expect(() =>
+      validateArtifactBundle(degraded, { fitScoreThreshold: 70, maxPerDomain: 2 }),
+    ).toThrow(/Fallback-only Qwen runs must be reported as degraded|Fallback drafts require manual review/);
   });
 });
