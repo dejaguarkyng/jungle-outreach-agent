@@ -26,6 +26,135 @@ from workers.outreach.source_adapters import (
 
 
 class WorkerSmokeTest(unittest.TestCase):
+    def test_public_contact_points_extract_supported_non_email_channels(self):
+        html = """
+        <a href="/contact">Contact sales</a>
+        <a href="tel:+15551234567">Call us</a>
+        <a href="https://wa.me/15551234567">WhatsApp</a>
+        <a href="https://github.com/acme/runtime/discussions">Discussions</a>
+        <a href="https://www.linkedin.com/company/acme">LinkedIn</a>
+        <a href="https://discord.gg/acme">Discord</a>
+        <a href="https://cal.com/acme/demo">Book a demo</a>
+        <form action="/partnerships/apply"></form>
+        """
+        points = worker_module.public_contact_points(html, "https://acme.dev")
+        point_types = {point["type"] for point in points}
+        self.assertTrue(
+            {
+                "official_contact_form",
+                "business_phone",
+                "whatsapp_business",
+                "github_discussions",
+                "linkedin_company",
+                "discord",
+                "booking_link",
+                "partnership_form",
+            }.issubset(point_types)
+        )
+
+    def test_scheduled_conversation_turn_does_not_require_inbound_body(self):
+        payload = {
+            "trigger": "scheduled_follow_up",
+            "inbound_body": "",
+            "history": [{"direction": "outbound", "body": "Prior note"}],
+        }
+        analysis = {
+            "response": json.dumps(
+                {
+                    "classification": "other",
+                    "summary": "The scheduled follow-up remains appropriate.",
+                    "open_questions": [],
+                    "commitments": [],
+                    "objections": [],
+                    "follow_up_at": None,
+                    "opportunity_state": "engaged",
+                    "next_action": "respond",
+                    "response_subject": "Following up",
+                    "response_body": "Following up with the requested implementation note.",
+                    "escalation_required": False,
+                }
+            )
+        }
+        with patch.object(worker_module, "request_json", return_value=analysis):
+            result = worker_module.qwen_conversation_turn(payload, "qwen-test")
+        self.assertEqual(result["next_action"], "respond")
+        self.assertEqual(result["opportunity_state"], "engaged")
+
+    def test_conversation_turn_uses_structured_analysis_and_validation(self):
+        analysis = {
+            "response": json.dumps(
+                {
+                    "classification": "question",
+                    "summary": "The prospect asks about a pilot.",
+                    "open_questions": ["What does the pilot include?"],
+                    "commitments": [],
+                    "objections": [],
+                    "follow_up_at": None,
+                    "opportunity_state": "evaluating",
+                    "next_action": "respond",
+                    "response_subject": "Re: pilot",
+                    "response_body": "Thanks. I can share a bounded pilot outline.",
+                    "escalation_required": False,
+                }
+            )
+        }
+        validation = {
+            "response": json.dumps({"status": "send_ready", "reasons": []})
+        }
+        with patch.object(
+            worker_module, "request_json", side_effect=[analysis, validation]
+        ):
+            result = worker_module.qwen_conversation_turn(
+                {"inbound_body": "What does a pilot include?", "history": []},
+                "qwen-test",
+            )
+            status, reasons = worker_module.qwen_validate_conversation_response(
+                {"inbound_body": "What does a pilot include?", "history": []},
+                result,
+                "qwen-test",
+            )
+        self.assertEqual(result["classification"], "question")
+        self.assertEqual(status, "send_ready")
+        self.assertEqual(reasons, [])
+
+    def test_non_email_contact_can_qualify_without_becoming_an_email_draft(self):
+        campaign = json.loads(
+            (ROOT / "config" / "campaigns" / "jungle-grid.json").read_text()
+        )
+        raw = {
+            "prospect_id": "contact-form-only",
+            "name": "Avery Builder",
+            "project": "avery/agent-runtime",
+            "project_url": "https://github.com/avery/agent-runtime",
+            "project_description": "AI agent runtime",
+            "category": "agent_compute",
+            "contact_points": [
+                {
+                    "type": "official_contact_form",
+                    "value": "https://agent-runtime.dev/contact",
+                    "source_url": "https://agent-runtime.dev/contact",
+                    "publicly_listed": True,
+                    "authorized": False,
+                    "confidence": 0.9,
+                }
+            ],
+            "research_text": (
+                "A maintainer-built AI agent runtime executes long-running LLM inference "
+                "jobs with background workers, retries, logs, artifacts, GPU capacity, "
+                "and deployment monitoring for production workloads."
+            ),
+            "updated_at": worker_module.utc_now(),
+            "owner_login": "avery",
+            "owner_type": "User",
+        }
+        with patch.object(worker_module, "CAMPAIGN", campaign):
+            prospect = worker_module.normalize_prospect(raw)
+            self.assertIsNotNone(prospect)
+            diagnostics = worker_module.qualification_diagnostics(prospect)
+        self.assertFalse(diagnostics["excluded"])
+        self.assertEqual(prospect["email"], "")
+        self.assertEqual(prospect["contact_points"][0]["type"], "official_contact_form")
+
     def test_source_registry_loads_yaml_and_restricted_env_overrides(self):
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "sources.yaml"
@@ -232,9 +361,45 @@ restricted_sources:
             self.assertIn("Trace Harbor", drafts[0]["body"])
             self.assertEqual(drafts[0]["links"], ["https://traceharbor.example"])
             self.assertNotIn("Jungle Grid", drafts[0]["body"])
+            self.assertEqual(scored[0]["proof_artifacts"][0]["junglegrid_job_id"], "fixture-job")
+            self.assertEqual(scored[0]["proof_artifacts"][0]["type"], "website_audit")
             for criterion, value in scored[0]["score_breakdown"].items():
                 if value > 0:
                     self.assertTrue(scored[0]["score_evidence_ids"][criterion])
+
+    def test_non_technical_campaign_runs_through_the_same_worker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            campaign = json.loads(
+                (ROOT / "config" / "campaigns" / "local-services.json").read_text()
+            )
+            env = {
+                **os.environ,
+                "OUTREACH_CAMPAIGN_CONFIG": json.dumps(campaign),
+                "FIT_SCORE_THRESHOLD": "50",
+                "OUTREACH_MEMORY_PATH": str(Path(directory) / "memory.json"),
+            }
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(WORKER),
+                    "--job",
+                    "full-run-template",
+                    "--target",
+                    "1",
+                    "--output",
+                    directory,
+                    "--input",
+                    str(ROOT / "examples" / "sample-local-services-input.json"),
+                ],
+                check=True,
+                env=env,
+            )
+            summary = json.loads((Path(directory) / "run_summary.json").read_text())
+            scored = json.loads((Path(directory) / "scored_prospects.json").read_text())
+            self.assertEqual(summary["campaign_id"], "local-services-booking")
+            self.assertEqual(len(scored), 1)
+            self.assertEqual(scored[0]["category"], "other")
+            self.assertEqual(scored[0]["proof_artifacts"][0]["type"], "website_audit")
 
     def test_template_run_writes_valid_artifacts(self):
         with tempfile.TemporaryDirectory() as directory:

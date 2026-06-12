@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Activity,
+  MessagesSquare,
   LayoutDashboard,
   Mail,
   Play,
@@ -19,6 +20,7 @@ const nav = [
   { href: "/prospects", label: "Prospects", icon: Users },
   { href: "/research", label: "Research review", icon: Search },
   { href: "/drafts", label: "Drafts", icon: Mail },
+  { href: "/conversations", label: "Conversations", icon: MessagesSquare },
   { href: "/runs", label: "Runs", icon: Activity },
   { href: "/run", label: "Manual run", icon: Play },
   { href: "/settings", label: "Settings", icon: Settings },
@@ -59,9 +61,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <div className="hidden border-t p-4 text-xs text-muted-foreground lg:absolute lg:bottom-0 lg:block lg:w-full">
           <p className="flex items-center gap-2 text-green-300">
             <span className="h-1.5 w-1.5 rounded-full bg-green-400" />
-            Draft-only mode
+            Policy-controlled outreach
           </p>
-          <p className="mt-1">No email send action exists.</p>
+          <p className="mt-1">Managed jobs, approvals, limits, and opt-outs.</p>
         </div>
       </aside>
       <main className="min-w-0">{children}</main>

@@ -10,6 +10,11 @@
     "senderName": "Alex",
     "signature": "Alex"
   },
+  "businessInformation": {
+    "description": "Trace Harbor provides release diagnostics for small SaaS teams.",
+    "website": "https://traceharbor.example"
+  },
+  "customerProblems": ["slow incident diagnosis", "release regressions", "fragmented error context"],
   "idealCustomerProfile": {
     "description": "Small SaaS and developer-tool teams operating public web services with recurring production errors.",
     "categories": ["developer_tool", "saas", "data_platform"],
@@ -30,6 +35,18 @@
     "positioning": "Trace Harbor can connect release changes to production errors without adding another large observability stack.",
     "callToAction": "If release diagnostics are a current priority, the short overview is",
     "subjectPrefix": "Trace Harbor and"
+  },
+  "proofOfValue": {
+    "strategy": "website_audit",
+    "artifactTypes": ["website_audit", "implementation_plan"]
+  },
+  "channels": ["email", "official_contact_form"],
+  "conversionGoal": "diagnostic pilot",
+  "autonomy": {
+    "mode": "draft_only",
+    "maximumFollowUps": 0,
+    "minimumScore": 70,
+    "escalationTerms": ["security", "legal", "contract", "pricing"]
   },
   "execution": {
     "researchModel": "qwen2.5:3b",

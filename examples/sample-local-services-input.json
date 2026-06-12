@@ -1,0 +1,23 @@
+{
+  "prospects": [
+    {
+      "prospect_id": "harbor-clinic",
+      "name": "Avery Morgan",
+      "email": "avery@harborclinic.example",
+      "email_source_url": "https://harborclinic.example/contact",
+      "email_source_type": "official_website",
+      "project": "Harbor Clinic",
+      "project_url": "https://harborclinic.example",
+      "project_description": "Independent clinic with online appointment requests.",
+      "category": "other",
+      "research_text": "Harbor Clinic is an independent clinic offering appointments. Patients currently use a contact form or phone to schedule appointments, and the site explains that after-hours requests receive a manual follow up. The booking page publishes availability, confirmation, reminder, and no-show policies for patients.",
+      "evidence_urls": [
+        "https://harborclinic.example/contact",
+        "https://harborclinic.example/appointments"
+      ],
+      "owner_login": "avery",
+      "owner_type": "User",
+      "updated_at": "2026-06-01T00:00:00Z"
+    }
+  ]
+}

@@ -20,11 +20,14 @@ export default async function ProspectDetailPage({
   if (!prospect) notFound();
   const research = repository.getResearch(id);
   const draft = repository.getDraftByProspect(id);
+  const contactPoints = repository.listContactPoints(id);
+  const proofArtifacts = repository.listProofArtifacts(id);
+  const conversations = repository.listConversations(id);
   return (
     <>
       <PageHeader
         title={prospect.name}
-        description={`${prospect.project} · ${prospect.email}`}
+        description={`${prospect.project} · ${prospect.email || "non-email contact"}`}
         actions={<Badge tone="green">{prospect.status.replaceAll("_", " ")}</Badge>}
       />
       <div className="grid gap-5 p-5 lg:grid-cols-[1.25fr_0.75fr] lg:p-8">
@@ -47,6 +50,20 @@ export default async function ProspectDetailPage({
               <Detail label="Company">{prospect.company ?? "—"}</Detail>
               <Detail label="Created">{formatDate(prospect.createdAt)}</Detail>
             </dl>
+          </Card>
+          <Card className="p-5">
+            <h2 className="text-sm font-semibold">Contact points</h2>
+            <div className="mt-4 space-y-3 text-sm">
+              {contactPoints.map((contact) => (
+                <div key={contact.id}>
+                  <Badge>{contact.type.replaceAll("_", " ")}</Badge>
+                  <p className="mt-1 break-all">{contact.value}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {contact.status} · confidence {Math.round(contact.confidence * 100)}%
+                  </p>
+                </div>
+              ))}
+            </div>
           </Card>
           <Card className="p-5">
             <h2 className="text-sm font-semibold">Research note</h2>
@@ -87,6 +104,23 @@ export default async function ProspectDetailPage({
             ) : null}
           </Card>
           <Card className="p-5">
+            <h2 className="text-sm font-semibold">Proof of value</h2>
+            {proofArtifacts.length ? (
+              <div className="mt-4 space-y-4 text-sm">
+                {proofArtifacts.map((artifact) => (
+                  <div key={artifact.id}>
+                    <Badge tone="green">{artifact.type.replaceAll("_", " ")}</Badge>
+                    <p className="mt-2 font-medium">{artifact.title}</p>
+                    <p className="mt-1 text-muted-foreground">{artifact.content}</p>
+                    <p className="mt-1 font-mono text-xs">{artifact.junglegridJobId}</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-4 text-sm text-muted-foreground">No proof artifact yet.</p>
+            )}
+          </Card>
+          <Card className="p-5">
             <h2 className="text-sm font-semibold">Contact history</h2>
             {draft ? (
               <div className="mt-4 text-sm">
@@ -101,6 +135,14 @@ export default async function ProspectDetailPage({
             ) : (
               <p className="mt-4 text-sm text-muted-foreground">No draft has been created.</p>
             )}
+            {conversations.map((conversation) => (
+              <div key={conversation.id} className="mt-4 border-t border-border pt-3 text-xs">
+                <p>{conversation.channel.replaceAll("_", " ")} · {conversation.status}</p>
+                <p className="text-muted-foreground">
+                  Opportunity: {conversation.opportunityState.replaceAll("_", " ")}
+                </p>
+              </div>
+            ))}
           </Card>
         </div>
       </div>

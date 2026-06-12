@@ -37,8 +37,6 @@
   ],
   "exclude": [
     "node_modules",
-    "src/jungle_grid_leads",
-    "tests",
     ".next/dev/types"
   ]
 }

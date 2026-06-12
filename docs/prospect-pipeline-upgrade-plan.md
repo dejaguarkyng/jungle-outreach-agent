@@ -43,3 +43,19 @@ and draft validation fail closed.
   `passed/failed` check and `model_mode=fallback` was not semantic failure.
 - Fallback was used when Ollama/model startup, pull, generation, or validation
   failed and `LLM_FALLBACK_MODE=template` allowed templates.
+
+## Implementation Map
+
+- **Retained:** the six-file prospect artifact contract, Jungle Grid workload
+  provider, GitHub and website research, SQLite records, CLI command names,
+  review controls, and ZeptoMail delivery adapter.
+- **Refactored:** evidence, scoring, contacts, drafts, and validation now share
+  one worker and one ingestion path. Legacy Python commands are compatibility
+  adapters to that path.
+- **Extended:** campaign configuration, source adapters, contact points,
+  proof-of-value artifacts, conversations, managed reply analysis, opportunity
+  state, confirmation approval, and policy-autonomous decisions.
+- **Migrated:** legacy emails become contact points and legacy drafts become
+  first outbound conversation messages without losing provider identifiers.
+- **Removed:** the two independent Python lead engines and local TypeScript
+  discovery/scoring/drafting implementation.

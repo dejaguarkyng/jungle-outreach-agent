@@ -54,6 +54,7 @@ MAX_SUBJECT = 79
 EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)
 URL_RE = re.compile(r"https?://[^\s<>\"')\]]+")
 HREF_RE = re.compile(r'href=["\']([^"\'#]+)["\']', re.I)
+FORM_ACTION_RE = re.compile(r'<form\b[^>]*action=["\']([^"\']+)["\']', re.I)
 CONTACT_CONTEXT_RE = re.compile(
     r"\b(contact|business|partnerships?|inquiries|reach(?:\s+us)?|email|support|hello)\b",
     re.I,
@@ -162,6 +163,7 @@ JOBS = {
     "write-emails-qwen",
     "full-run-template",
     "full-run-qwen",
+    "conversation-turn-qwen",
 }
 
 logging.basicConfig(
@@ -608,7 +610,9 @@ def canonical_entity_graph(prospect: dict[str, Any], evidence: list[dict[str, An
     project_id = prospect.get("entity_id") or canonical_id("project", project)
     company_id = canonical_id("company", owner or email_domain or project)
     person_id = canonical_id("person", f"{prospect.get('name', '')} {email}")
-    contact_id = canonical_id("contact", email)
+    primary_contact = next(iter(prospect.get("contact_points", [])), {})
+    contact_value = email or str(primary_contact.get("value", ""))
+    contact_id = canonical_id("contact", contact_value)
     domain_id = canonical_id("domain", email_domain or project_domain or project)
     entities: list[dict[str, Any]] = [
         {
@@ -630,9 +634,11 @@ def canonical_entity_graph(prospect: dict[str, Any], evidence: list[dict[str, An
         {
             "entity_id": contact_id,
             "entity_type": "contact_point",
-            "canonical_name": email,
-            "aliases": [email],
-            "source_specific_ids": {"email_source_url": prospect.get("email_source_url", "")},
+            "canonical_name": contact_value,
+            "aliases": [contact_value],
+            "source_specific_ids": {
+                "contact_type": str(primary_contact.get("type", "email" if email else ""))
+            },
             "confidence": float((prospect.get("contact_provenance") or {}).get("confidence") or 0.5),
         },
         {
@@ -765,13 +771,21 @@ def structured_evidence_for_prospect(
         item = build_evidence(prospect, "activity", activity, primary_url, source_type, directness="direct")
         if item:
             evidence.append(item)
-    contact_claim = f"{prospect['email']} is publicly listed at {prospect['email_source_url']}"
+    primary_contact = next(iter(prospect.get("contact_points", [])), {})
+    contact_value = prospect.get("email") or primary_contact.get("value", "")
+    contact_source_url = (
+        prospect.get("email_source_url") or primary_contact.get("source_url", "")
+    )
+    contact_source_type = (
+        prospect.get("email_source_type") or primary_contact.get("type", "official_website")
+    )
+    contact_claim = f"{contact_value} is publicly listed at {contact_source_url}"
     contact_item = build_evidence(
         prospect,
         "contact",
         contact_claim,
-        prospect["email_source_url"],
-        prospect["email_source_type"],
+        contact_source_url,
+        contact_source_type,
         directness="direct",
     )
     if contact_item:
@@ -781,7 +795,7 @@ def structured_evidence_for_prospect(
         prospect,
         "role",
         f"{prospect['name']} has a {relationship} for {prospect['project']}",
-        prospect.get("project_url") or prospect["email_source_url"],
+        prospect.get("project_url") or contact_source_url,
         source_type,
         directness="strong_inference" if prospect.get("owner_type", "").lower() != "user" else "direct",
     )
@@ -906,16 +920,40 @@ def category_for(text: str) -> str:
 
 
 def normalize_prospect(raw: dict[str, Any]) -> dict[str, Any] | None:
-    source_url = str(raw.get("email_source_url", "")).strip()
     email = str(raw.get("email", "")).strip().lower()
+    raw_contacts = raw.get("contact_points")
+    contact_points = raw_contacts if isinstance(raw_contacts, list) else []
+    primary_contact = next(
+        (item for item in contact_points if isinstance(item, dict) and item.get("value")),
+        {},
+    )
+    source_url = str(
+        raw.get("email_source_url") or primary_contact.get("source_url") or ""
+    ).strip()
     project = str(raw.get("project", "")).strip()
     project_url = str(raw.get("project_url", "")).strip()
-    if not source_url or not email or not project or not project_url:
+    if not source_url or not project or not project_url:
         return None
-    if not EMAIL_RE.fullmatch(email):
+    if email and not EMAIL_RE.fullmatch(email):
         return None
     owner = str(raw.get("owner_login") or project.split("/", 1)[0]).strip()
     cleaned_research = clean_research_text(str(raw.get("research_text") or raw.get("project_description") or "").strip())
+    if not contact_points and email:
+        contact_points = [
+            {
+                "type": "email",
+                "value": email,
+                "source_url": source_url,
+                "publicly_listed": True,
+                "authorized": True,
+                "confidence": contact_quality(
+                    email,
+                    str(raw.get("email_source_type") or "official_website"),
+                    cleaned_research,
+                )
+                / 10,
+            }
+        ]
     return {
         "prospect_id": str(raw.get("prospect_id") or uuid.uuid4()),
         "schema_version": "2.0",
@@ -924,16 +962,29 @@ def normalize_prospect(raw: dict[str, Any]) -> dict[str, Any] | None:
         "email": email,
         "email_source_url": source_url,
         "email_source_type": str(raw.get("email_source_type") or "official_website"),
+        "contact_points": contact_points,
         "contact_provenance": raw.get("contact_provenance")
         or {
-            "value": email,
+            "value": email or str(primary_contact.get("value") or ""),
             "source_url": source_url,
-            "source_type": str(raw.get("email_source_type") or "official_website"),
-            "publicly_listed": True,
+            "source_type": str(
+                raw.get("email_source_type")
+                or primary_contact.get("type")
+                or "official_website"
+            ),
+            "publicly_listed": bool(primary_contact.get("publicly_listed", True)),
             "person_project_match": "verified" if str(raw.get("owner_type") or "").lower() == "user" else "project_contact",
             "verification_method": "public_source",
-            "confidence": contact_quality(email, str(raw.get("email_source_type") or "official_website"), cleaned_research)
-            / 10,
+            "confidence": (
+                contact_quality(
+                    email,
+                    str(raw.get("email_source_type") or "official_website"),
+                    cleaned_research,
+                )
+                / 10
+                if email
+                else float(primary_contact.get("confidence") or 0)
+            ),
             "collected_at": utc_now(),
             "appropriate_use_category": "professional_outreach",
         },
@@ -1045,7 +1096,88 @@ def extract_likely_site_links(html: str, base_urls: list[str]) -> list[str]:
     return list(dict.fromkeys(links))
 
 
-def website_contacts(start_urls: list[str] | str, source_type: str = "official_website") -> tuple[list[dict[str, str]], str]:
+def public_contact_points(html: str, source_url: str) -> list[dict[str, Any]]:
+    points: list[dict[str, Any]] = []
+    links = [match.group(1).strip() for match in HREF_RE.finditer(html)]
+    links.extend(match.group(1).strip() for match in FORM_ACTION_RE.finditer(html))
+    if "<form" in html.lower() and CONTACT_CONTEXT_RE.search(html):
+        links.append(source_url)
+    for raw in links:
+        absolute = urllib.parse.urljoin(source_url, raw)
+        lowered = absolute.lower()
+        point_type = ""
+        if raw.lower().startswith("mailto:"):
+            continue
+        if raw.lower().startswith("tel:"):
+            point_type = "business_phone"
+            absolute = raw.split(":", 1)[1]
+        elif "wa.me/" in lowered or "whatsapp" in lowered:
+            point_type = "whatsapp_business"
+        elif "github.com" in lowered and "/discussions" in lowered:
+            point_type = "github_discussions"
+        elif "github.com" in lowered and "/issues" in lowered:
+            point_type = "github_issue"
+        elif "github.com" in lowered:
+            point_type = "github_profile"
+        elif "linkedin.com/company/" in lowered:
+            point_type = "linkedin_company"
+        elif "linkedin.com/in/" in lowered:
+            point_type = "linkedin_profile"
+        elif "discord.gg/" in lowered or "discord.com/invite/" in lowered:
+            point_type = "discord"
+        elif "slack.com" in lowered:
+            point_type = "slack"
+        elif "x.com/" in lowered or "twitter.com/" in lowered:
+            point_type = "x"
+        elif "facebook.com/" in lowered:
+            point_type = "facebook_page"
+        elif "instagram.com/" in lowered:
+            point_type = "instagram_business"
+        elif "calendly.com/" in lowered or "cal.com/" in lowered or "booking" in lowered:
+            point_type = "booking_link"
+        elif re.search(r"(?:^|/)(integration|integrations)(?:/|$)", lowered):
+            point_type = "integration_form"
+        elif re.search(r"(?:^|/)(partner|partners|partnerships)(?:/|$)", lowered):
+            point_type = "partnership_form"
+        elif re.search(r"(?:^|/)(marketplace|submit)(?:/|$)", lowered):
+            point_type = "marketplace_form"
+        elif re.search(r"(?:^|/)(feature-requests?|ideas|roadmap)(?:/|$)", lowered):
+            point_type = "feature_request_portal"
+        elif re.search(r"(?:^|/)(community|forum|discuss)(?:/|$)", lowered):
+            point_type = "community_forum"
+        elif re.search(r"(?:^|/)(contact|support|inquiry|inquiries)(?:/|$)", lowered):
+            point_type = "official_contact_form"
+        if not point_type:
+            continue
+        points.append(
+            {
+                "type": point_type,
+                "value": absolute,
+                "source_url": source_url,
+                "publicly_listed": True,
+                "authorized": point_type not in {"github_issue", "discord", "slack"},
+                "confidence": 0.9 if point_type in {
+                    "official_contact_form",
+                    "partnership_form",
+                    "integration_form",
+                    "booking_link",
+                } else 0.75,
+            }
+        )
+    unique: dict[tuple[str, str], dict[str, Any]] = {}
+    for point in points:
+        unique[(point["type"], point["value"])] = point
+    return list(unique.values())
+
+
+def website_contacts(
+    start_urls: list[str] | str,
+    source_type: str = "official_website",
+    include_contact_points: bool = False,
+) -> (
+    tuple[list[dict[str, str]], str]
+    | tuple[list[dict[str, str]], str, list[dict[str, Any]]]
+):
     queue = [start_urls] if isinstance(start_urls, str) else [url for url in start_urls if url]
     queue = list(dict.fromkeys(queue))
     seed_urls = list(queue)
@@ -1058,10 +1190,11 @@ def website_contacts(start_urls: list[str] | str, source_type: str = "official_w
         if parsed.scheme in {"http", "https"}:
             parsed_bases.append(parsed)
     if not parsed_bases:
-        return [], ""
+        return ([], "", []) if include_contact_points else ([], "")
     visited: set[str] = set()
     latest_text = ""
     contacts: list[dict[str, str]] = []
+    contact_points: list[dict[str, Any]] = []
     while queue and len(visited) < 5:
         current = queue.pop(0)
         if current in visited:
@@ -1072,6 +1205,7 @@ def website_contacts(start_urls: list[str] | str, source_type: str = "official_w
         except (urllib.error.URLError, TimeoutError, ValueError, socket.timeout, http.client.HTTPException):
             continue
         latest_text = text
+        contact_points.extend(public_contact_points(text, current))
         parsed_current = urllib.parse.urlparse(current)
         effective_source_type = (
             "project_docs" if any(is_docs_url(parsed_current, base) for base in parsed_bases) else source_type
@@ -1088,6 +1222,11 @@ def website_contacts(start_urls: list[str] | str, source_type: str = "official_w
         for link in extract_likely_site_links(text, seed_urls):
             if link not in visited and link not in queue:
                 queue.append(link)
+    unique_points: dict[tuple[str, str], dict[str, Any]] = {}
+    for point in contact_points:
+        unique_points[(point["type"], point["value"])] = point
+    if include_contact_points:
+        return contacts, latest_text, list(unique_points.values())
     return contacts, latest_text
 
 
@@ -1391,11 +1530,49 @@ def repo_to_prospect(repo: dict[str, Any], category: str | None) -> dict[str, An
         str(profile.get("blog") or "").strip(),
         *metadata["project_urls"],
     ]
-    homepage_contacts, homepage_text = website_contacts(website_seeds)
+    homepage_contacts, homepage_text, homepage_points = website_contacts(
+        website_seeds, include_contact_points=True
+    )
     contacts.extend(homepage_contacts)
     contacts.extend(package_registry_contacts(metadata["package_pages"]))
     best_contact = pick_best_contact(contacts)
-    if not best_contact:
+    github_points = [
+        {
+            "type": "github_profile",
+            "value": profile.get("html_url") or f"https://github.com/{owner_login}",
+            "source_url": profile.get("html_url") or f"https://github.com/{owner_login}",
+            "publicly_listed": True,
+            "authorized": True,
+            "confidence": 0.9,
+        },
+        {
+            "type": "github_discussions",
+            "value": f"https://github.com/{full_name}/discussions",
+            "source_url": repo.get("html_url") or f"https://github.com/{full_name}",
+            "publicly_listed": True,
+            "authorized": True,
+            "confidence": 0.75,
+        },
+    ]
+    contact_points = [*homepage_points, *github_points]
+    if best_contact:
+        contact_points.insert(
+            0,
+            {
+                "type": "email",
+                "value": best_contact["email"],
+                "source_url": best_contact["source_url"],
+                "publicly_listed": True,
+                "authorized": True,
+                "confidence": contact_quality(
+                    best_contact["email"],
+                    best_contact["source_type"],
+                    best_contact.get("context", ""),
+                )
+                / 10,
+            },
+        )
+    if not contact_points:
         return None
 
     combined_text = clean_research_text(f"{repo.get('description', '')} {readme or homepage_text}")
@@ -1403,16 +1580,21 @@ def repo_to_prospect(repo: dict[str, Any], category: str | None) -> dict[str, An
     return normalize_prospect(
         {
             "name": profile.get("name") or owner_login,
-            "email": best_contact["email"],
-            "email_source_url": best_contact["source_url"],
-            "email_source_type": best_contact["source_type"],
+            "email": best_contact["email"] if best_contact else "",
+            "email_source_url": (
+                best_contact["source_url"] if best_contact else contact_points[0]["source_url"]
+            ),
+            "email_source_type": (
+                best_contact["source_type"] if best_contact else "official_website"
+            ),
+            "contact_points": contact_points,
             "project": full_name,
             "project_url": repo.get("html_url") or f"https://github.com/{full_name}",
             "project_description": repo.get("description") or "",
             "category": category or category_for(combined_text[:4000]),
             "research_text": combined_text[:20_000],
             "evidence_urls": [
-                best_contact["source_url"],
+                best_contact["source_url"] if best_contact else contact_points[0]["source_url"],
                 repo.get("html_url") or f"https://github.com/{full_name}",
                 f"https://github.com/{full_name}#readme",
                 *metadata["project_urls"],
@@ -1493,12 +1675,14 @@ def persist_memory(prospects: list[dict[str, Any]]) -> None:
     path = dedupe_store_path()
     memory = load_memory()
     for prospect in prospects:
-        email = prospect["email"].lower()
+        email = prospect.get("email", "").lower()
         domain = email.partition("@")[2]
-        memory["emails"].add(email)
+        if email:
+            memory["emails"].add(email)
         memory["owners"].add(owner_key(prospect.get("owner_login", "")))
         memory["repos"].add(prospect["project_url"].strip().lower())
-        memory["domains"].add(domain)
+        if domain:
+            memory["domains"].add(domain)
         memory["names"].add(normalize_name(prospect["name"]))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -1516,7 +1700,7 @@ def qualification_diagnostics(prospect: dict[str, Any]) -> dict[str, Any]:
             ]
         )
     )
-    email = prospect["email"].lower()
+    email = prospect.get("email", "").lower()
     local, _, domain = email.partition("@")
     owner = prospect.get("owner_login", "")
     updated_days = days_since(prospect.get("updated_at") or prospect.get("pushed_at"))
@@ -1547,7 +1731,7 @@ def qualification_diagnostics(prospect: dict[str, Any]) -> dict[str, Any]:
         excluded_rule = "campaign_exclusion_term"
     elif is_large_org(owner):
         excluded_rule = "large_vendor_or_foundation_org"
-    elif is_generic_contact_email(email):
+    elif email and is_generic_contact_email(email):
         excluded_rule = "generic_contact_email"
     elif REPO_TYPE_EXCLUSION_RE.search(repo_label):
         excluded_rule = "repo_type_excluded"
@@ -1567,8 +1751,8 @@ def qualification_diagnostics(prospect: dict[str, Any]) -> dict[str, Any]:
         excluded_rule = "missing_campaign_pain_signal"
     elif updated_days is None or updated_days > maximum_age:
         excluded_rule = "stale_project"
-    elif contact_quality(email, prospect["email_source_type"], text[:2000]) < 5:
-        excluded_rule = "low_quality_contact"
+    elif not prospect.get("contact_points"):
+        excluded_rule = "missing_public_contact_point"
 
     if not evidence_points:
         missing_evidence.append("concrete workload execution evidence")
@@ -1584,8 +1768,25 @@ def qualification_diagnostics(prospect: dict[str, Any]) -> dict[str, Any]:
         missing_evidence.append("execution pain signal")
     if updated_days is None or updated_days > maximum_age:
         missing_evidence.append("recent activity")
-    if contact_quality(email, prospect["email_source_type"], text[:2000]) < 7:
-        missing_evidence.append("builder-grade direct contact")
+    contact_score = (
+        contact_quality(email, prospect["email_source_type"], text[:2000])
+        if email
+        else round(
+            max(
+                (
+                    float(contact.get("confidence", 0))
+                    for contact in prospect.get("contact_points", [])
+                    if isinstance(contact, dict)
+                ),
+                default=0,
+            )
+            * 10
+        )
+    )
+    if contact_score < 5:
+        missing_evidence.append("verified public contact point")
+        if excluded_rule is None:
+            excluded_rule = "low_quality_contact"
     if not re.search(r"\b(founder|maintainer|solo|indie|small team|developer)\b", text, re.I) and prospect.get(
         "owner_type", ""
     ).lower() != "user":
@@ -1598,7 +1799,7 @@ def qualification_diagnostics(prospect: dict[str, Any]) -> dict[str, Any]:
         + (0.15 * min(len(pain_signals), 2))
         + (0.15 if (updated_days is not None and updated_days <= 45) else 0)
         + (0.1 if prospect.get("owner_type", "").lower() == "user" else 0)
-        + (0.1 if contact_quality(email, prospect["email_source_type"], text[:2000]) >= 7 else 0),
+        + (0.1 if contact_score >= 7 else 0),
     )
     return {
         "excluded": excluded_rule is not None,
@@ -1607,7 +1808,7 @@ def qualification_diagnostics(prospect: dict[str, Any]) -> dict[str, Any]:
         "missing_evidence": missing_evidence,
         "duplicate": False,
         "stale": bool(updated_days is None or updated_days > maximum_age),
-        "generic": is_generic_contact_email(email),
+        "generic": bool(email and is_generic_contact_email(email)),
         "irrelevant": not evidence_points or not has_target_signal,
         "generic_package": generic_package,
         "contamination_reasons": contamination,
@@ -1617,8 +1818,8 @@ def qualification_diagnostics(prospect: dict[str, Any]) -> dict[str, Any]:
         "has_execution_surface": has_execution_surface,
         "large_company": is_large_org(owner),
         "owner_key": owner_key(owner),
-        "contact_quality": contact_quality(email, prospect["email_source_type"], text[:2000]),
-        "generic_team_email": is_team_email(email),
+        "contact_quality": contact_score,
+        "generic_team_email": bool(email and is_team_email(email)),
         "updated_days": updated_days,
         "evidence_points": evidence_points,
         "pain_signals": pain_signals,
@@ -1749,9 +1950,30 @@ def prospect_from_source_candidate(
     if candidate.source_type in {"news_rss", "hackernews", "reddit", "stack_exchange", "youtube", "arxiv"}:
         return None
 
-    contacts, page_text = website_contacts(candidate_official_urls(candidate), candidate.source_type)
+    contacts, page_text, contact_points = website_contacts(
+        candidate_official_urls(candidate),
+        candidate.source_type,
+        include_contact_points=True,
+    )
     best_contact = pick_best_contact(contacts)
-    if not best_contact:
+    if best_contact:
+        contact_points.insert(
+            0,
+            {
+                "type": "email",
+                "value": best_contact["email"],
+                "source_url": best_contact["source_url"],
+                "publicly_listed": True,
+                "authorized": True,
+                "confidence": contact_quality(
+                    best_contact["email"],
+                    best_contact["source_type"],
+                    best_contact.get("context", ""),
+                )
+                / 10,
+            },
+        )
+    if not contact_points:
         return None
     documents = adapter.fetch(candidate, DiscoveryContext(deterministic=False))
     evidence = adapter.normalize(documents, DiscoveryContext(deterministic=False))
@@ -1759,22 +1981,33 @@ def prospect_from_source_candidate(
     project_url = candidate.url
     return normalize_prospect(
         {
-            "name": best_contact["email"].partition("@")[0].replace(".", " ").title(),
-            "email": best_contact["email"],
-            "email_source_url": best_contact["source_url"],
-            "email_source_type": best_contact["source_type"] if best_contact["source_type"] in {
+            "name": (
+                best_contact["email"].partition("@")[0].replace(".", " ").title()
+                if best_contact
+                else candidate.title or "Project team"
+            ),
+            "email": best_contact["email"] if best_contact else "",
+            "email_source_url": (
+                best_contact["source_url"] if best_contact else contact_points[0]["source_url"]
+            ),
+            "email_source_type": best_contact["source_type"] if best_contact and best_contact["source_type"] in {
                 "github_profile",
                 "repository_readme",
                 "official_website",
                 "project_docs",
                 "package_page",
             } else "official_website",
+            "contact_points": contact_points,
             "project": candidate.title or urllib.parse.urlparse(project_url).netloc,
             "project_url": project_url,
             "project_description": str(candidate.metadata.get("description") or candidate.title or ""),
             "category": category or category_for(evidence_text),
             "research_text": evidence_text,
-            "evidence_urls": [candidate.url, best_contact["source_url"], *[item.source_url for item in evidence]],
+            "evidence_urls": [
+                candidate.url,
+                best_contact["source_url"] if best_contact else contact_points[0]["source_url"],
+                *[item.source_url for item in evidence],
+            ],
             "owner_login": urllib.parse.urlparse(project_url).netloc,
             "owner_type": "",
             "updated_at": candidate.published_at or utc_now(),
@@ -1898,8 +2131,13 @@ def discover(
     generic_email_count = 0
     large_company_count = 0
     for prospect in prospects:
-        email = prospect["email"].lower()
-        domain = email.split("@")[-1]
+        email = prospect.get("email", "").lower()
+        domain = email.split("@")[-1] if email else ""
+        contact_key = email or "|".join(
+            f"{item.get('type')}:{str(item.get('value', '')).lower()}"
+            for item in prospect.get("contact_points", [])
+            if isinstance(item, dict)
+        )
         project_key = prospect["project"].strip().lower()
         diagnostics = qualification_diagnostics(prospect)
         duplicate_reason = ""
@@ -1907,8 +2145,8 @@ def discover(
             email in excluded_emails
             or domain in excluded_domains
             or project_key in excluded_project_keys
-            or email in unique
-            or email in memory["emails"]
+            or (email and email in unique)
+            or (email and email in memory["emails"])
             or owner_key(prospect.get("owner_login", "")) in memory["owners"]
             or prospect["project_url"].strip().lower() in memory["repos"]
             or normalize_name(prospect["name"]) in memory["names"]
@@ -1976,8 +2214,9 @@ def discover(
             )
             continue
         prospect["diagnostics"] = diagnostics
-        unique[email] = prospect
-        domains[domain] += 1
+        unique[contact_key or project_key] = prospect
+        if domain:
+            domains[domain] += 1
         owners[owner] += 1
         categories[prospect["category"]] += 1
         if diagnostics["generic"]:
@@ -2036,6 +2275,9 @@ def research(prospects: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "evidence_points": evidence_points,
                 "pain_signals": pain_signals,
                 "evidence": structured_evidence,
+                "junglegrid_job_id": os.getenv(
+                    "JUNGLEGRID_JOB_ID", "fixture-job"
+                ),
             }
         )
     return notes
@@ -2156,6 +2398,35 @@ def score(prospects: list[dict[str, Any]], notes: list[dict[str, Any]]) -> list[
                 ),
                 "outreach_priority": "high" if fit_score >= 85 else ("medium" if fit_score >= 75 else "low"),
                 "excluded": False,
+                "junglegrid_job_id": os.getenv(
+                    "JUNGLEGRID_JOB_ID", "fixture-job"
+                ),
+                "proof_artifacts": [
+                    {
+                        "type": CAMPAIGN.get("proofOfValue", {}).get(
+                            "strategy", "implementation_plan"
+                        ),
+                        "title": (
+                            f"{CAMPAIGN['offer']['name']} proof of value for "
+                            f"{prospect['project']}"
+                        ),
+                        "content": (
+                            f"Validate the evidenced need for {prospect['project']}, "
+                            f"connect {CAMPAIGN['offer']['name']} to the current workflow, "
+                            "run a bounded pilot, and compare reliability, delivery time, "
+                            "and operating cost."
+                        ),
+                        "uri": None,
+                        "evidence_ids": [
+                            item["evidence_id"]
+                            for item in evidence_items
+                            if item.get("evidence_id")
+                        ],
+                        "junglegrid_job_id": os.getenv(
+                            "JUNGLEGRID_JOB_ID", "fixture-job"
+                        ),
+                    }
+                ],
             }
         )
     return rows
@@ -2509,6 +2780,214 @@ def qwen_semantic_validate_drafts(
     return results
 
 
+def qwen_conversation_turn(payload: dict[str, Any], model: str) -> dict[str, Any]:
+    trigger = str(payload.get("trigger") or "inbound_reply")
+    task = (
+        "Evaluate the scheduled follow-up against the conversation history and current "
+        "campaign policy. Choose whether to respond now, follow up later, escalate, or close."
+        if trigger == "scheduled_follow_up"
+        else "Classify the inbound reply and choose the next conversation action."
+    )
+    response = request_json(
+        f"{ollama_base()}/api/generate",
+        method="POST",
+        payload={
+            "model": model,
+            "system": (
+                "You manage an evidence-bound business-development conversation. "
+                "Use only the supplied campaign, prospect, evidence, and message history. "
+                "Classify the inbound reply, update the conversation state, choose the next "
+                "action, and draft a concise response when appropriate. Return valid JSON only."
+            ),
+            "prompt": json.dumps(
+                {
+                    "campaign": CAMPAIGN,
+                    "conversation": payload,
+                    "task": task,
+                    "output": {
+                        "classification": (
+                            "interested|question|objection|not_now|opt_out|"
+                            "wrong_person|other"
+                        ),
+                        "summary": "string",
+                        "open_questions": ["string"],
+                        "commitments": ["string"],
+                        "objections": ["string"],
+                        "follow_up_at": "ISO datetime or null",
+                        "opportunity_state": (
+                            "qualified|engaged|evaluating|committed|won|lost"
+                        ),
+                        "next_action": "respond|follow_up_later|escalate|close",
+                        "response_subject": "string or null",
+                        "response_body": "string or null",
+                        "escalation_required": "boolean",
+                    },
+                }
+            ),
+            "format": "json",
+            "stream": False,
+            "options": {"temperature": 0.1},
+        },
+        timeout=240,
+    )
+    generated = json.loads(str(response.get("response", "")).strip())
+    allowed_classifications = {
+        "interested",
+        "question",
+        "objection",
+        "not_now",
+        "opt_out",
+        "wrong_person",
+        "other",
+    }
+    allowed_states = {
+        "qualified",
+        "engaged",
+        "evaluating",
+        "committed",
+        "won",
+        "lost",
+    }
+    allowed_actions = {"respond", "follow_up_later", "escalate", "close"}
+    classification = str(generated.get("classification", ""))
+    opportunity_state = str(generated.get("opportunity_state", ""))
+    next_action = str(generated.get("next_action", ""))
+    if (
+        classification not in allowed_classifications
+        or opportunity_state not in allowed_states
+        or next_action not in allowed_actions
+        or not str(generated.get("summary", "")).strip()
+        or not isinstance(generated.get("escalation_required"), bool)
+    ):
+        raise ValueError("Conversation analysis returned an invalid contract.")
+    inbound = str(payload.get("inbound_body", ""))
+    if re.search(
+        r"\b(unsubscribe|opt\s*out|stop contacting|do not contact|remove me)\b",
+        inbound,
+        re.I,
+    ):
+        classification = "opt_out"
+        opportunity_state = "lost"
+        next_action = "close"
+        generated["response_subject"] = None
+        generated["response_body"] = None
+    return {
+        "schema_version": "1.0",
+        "classification": classification,
+        "summary": str(generated["summary"]).strip(),
+        "open_questions": [
+            str(value).strip()
+            for value in generated.get("open_questions", [])
+            if str(value).strip()
+        ],
+        "commitments": [
+            str(value).strip()
+            for value in generated.get("commitments", [])
+            if str(value).strip()
+        ],
+        "objections": [
+            str(value).strip()
+            for value in generated.get("objections", [])
+            if str(value).strip()
+        ],
+        "follow_up_at": generated.get("follow_up_at"),
+        "opportunity_state": opportunity_state,
+        "next_action": next_action,
+        "response_subject": (
+            str(generated.get("response_subject", "")).strip() or None
+        ),
+        "response_body": str(generated.get("response_body", "")).strip() or None,
+        "escalation_required": bool(generated["escalation_required"]),
+    }
+
+
+def qwen_validate_conversation_response(
+    payload: dict[str, Any], result: dict[str, Any], model: str
+) -> tuple[str, list[str]]:
+    if not result.get("response_body"):
+        return (
+            "excluded"
+            if result["next_action"] == "close"
+            else "manual_review_required",
+            [] if result["next_action"] == "close" else ["no outbound response generated"],
+        )
+    response = request_json(
+        f"{ollama_base()}/api/generate",
+        method="POST",
+        payload={
+            "model": model,
+            "system": (
+                "You are a fail-closed semantic validator for a business-development "
+                "conversation. Return valid JSON only."
+            ),
+            "prompt": json.dumps(
+                {
+                    "campaign": CAMPAIGN,
+                    "conversation": payload,
+                    "analysis": result,
+                    "task": (
+                        "Validate that the response is supported, relevant, respectful, "
+                        "channel-appropriate, and does not ignore an opt-out or escalation."
+                    ),
+                    "output": {
+                        "status": (
+                            "send_ready|manual_review_required|"
+                            "regeneration_required|excluded"
+                        ),
+                        "reasons": ["string"],
+                    },
+                }
+            ),
+            "format": "json",
+            "stream": False,
+            "options": {"temperature": 0.0},
+        },
+        timeout=240,
+    )
+    generated = json.loads(str(response.get("response", "")).strip())
+    status = str(generated.get("status", ""))
+    reasons = [
+        str(reason).strip()
+        for reason in generated.get("reasons", [])
+        if str(reason).strip()
+    ]
+    if status not in {
+        "send_ready",
+        "manual_review_required",
+        "regeneration_required",
+        "excluded",
+    }:
+        raise ValueError("Conversation validation returned an invalid status.")
+    if status != "send_ready" and not reasons:
+        raise ValueError("Conversation validation omitted failure reasons.")
+    return status, reasons
+
+
+def run_conversation_turn(output: Path) -> int:
+    raw = os.getenv("OPENLINE_CONVERSATION_INPUT", "").strip()
+    if not raw:
+        raise ValueError("OPENLINE_CONVERSATION_INPUT is required.")
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise ValueError("Conversation input must be an object.")
+    trigger = str(payload.get("trigger") or "inbound_reply")
+    if trigger not in {"inbound_reply", "scheduled_follow_up"}:
+        raise ValueError("Conversation input has an unsupported trigger.")
+    if trigger == "inbound_reply" and not str(payload.get("inbound_body", "")).strip():
+        raise ValueError("Inbound conversation input must include inbound_body.")
+    model = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
+    if not ensure_ollama(model):
+        raise RuntimeError("Qwen/Ollama is unavailable for the conversation turn.")
+    result = qwen_conversation_turn(payload, model)
+    validation_status, validation_reasons = qwen_validate_conversation_response(
+        payload, result, model
+    )
+    result["validation_status"] = validation_status
+    result["validation_reasons"] = validation_reasons
+    write_json(output, "conversation_result.json", result)
+    return 0
+
+
 def apply_semantic_draft_validation(
     drafts: list[dict[str, Any]],
     failures: list[dict[str, Any]],
@@ -2662,6 +3141,14 @@ def write_drafts(
     seen_emails: set[str] = set()
     for prospect in scored:
         note = by_id[prospect["prospect_id"]]
+        if not prospect.get("email"):
+            failures.append(
+                {
+                    "prospect_id": prospect["prospect_id"],
+                    "errors": ["no email contact point; qualified for another channel"],
+                }
+            )
+            continue
         if (
             prospect["fit_score"] < max(threshold, 75)
             or note["evidence_strength"] < 0.8
@@ -2768,6 +3255,8 @@ def run(args: argparse.Namespace) -> int:
         output = Path(args.output)
         input_path = Path(args.input) if args.input else None
         campaign = configure_campaign(input_path)
+        if args.job == "conversation-turn-qwen":
+            return run_conversation_turn(output)
         registry = build_default_registry(source_registry_config())
         sources_enabled, sources_succeeded, sources_degraded, sources_failed = health_counts(registry.health())
         prospects, skipped, adapter_signals = discover(args.target, input_path, args.category, registry)
@@ -2892,6 +3381,7 @@ def run(args: argparse.Namespace) -> int:
                 key: value
                 for key, value in row.items()
                 if key not in {"research_text", "evidence_urls", "stars", "active", "diagnostics"}
+                and not (key in {"email", "email_source_url", "email_source_type"} and not value)
             }
             for row in prospects
         ]
@@ -2968,6 +3458,9 @@ def run(args: argparse.Namespace) -> int:
             "campaign_name": campaign["name"],
             "offer_name": campaign["offer"]["name"],
             "execution_backend": execution_backend,
+            "junglegrid_job_id": os.getenv(
+                "JUNGLEGRID_JOB_ID", "fixture-job"
+            ),
             "production_eligible": execution_backend == "jungle_grid",
             "job_contract_schema_version": contract.get("schema_version", "1.0"),
             "pipeline_stages": contract.get(

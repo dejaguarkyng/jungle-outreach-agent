@@ -1,15 +1,8 @@
-import { GitHubProvider } from "@/src/providers/github-provider";
 import { OutreachRepository } from "@/src/db/repository";
-import { ProspectResearchService } from "@/src/services/prospect-research";
-import { EmailCopywriter } from "@/src/services/email-copywriter";
-import { scoreProspect } from "@/src/services/fit-scoring";
 import {
-  assertDraftContent,
-  extractLinks,
   validateEmailDraftArtifact,
 } from "@/src/safety/email-validation";
-import type { EmailDraft, ProspectCategory } from "@/src/domain/schemas";
-import { logger } from "@/src/lib/logger";
+import type { EmailDraft } from "@/src/domain/schemas";
 import {
   ZeptoMailProviderError,
   ZeptoMailService,
@@ -24,135 +17,7 @@ function startOfToday(): string {
 export class OutreachService {
   constructor(
     readonly repository = new OutreachRepository(),
-    private readonly github = new GitHubProvider(),
-    private readonly researcher = new ProspectResearchService(github),
-    private readonly copywriter = new EmailCopywriter(),
   ) {}
-
-  async discover(limit: number, category?: ProspectCategory): Promise<{ found: number; duplicates: number }> {
-    const candidates = await this.github.discover(limit, category);
-    let found = 0;
-    let duplicates = 0;
-    for (const candidate of candidates) {
-      const domain = candidate.contact.email.split("@")[1];
-      if (
-        this.repository.isBlocked(candidate.contact.email, domain) ||
-        this.repository.isSuppressed(candidate.contact.email, domain)
-      ) {
-        continue;
-      }
-      const result = this.repository.upsertProspect({
-        name: candidate.name,
-        roleTitle: candidate.roleTitle,
-        email: candidate.contact.email,
-        emailSourceUrl: candidate.contact.sourceUrl,
-        emailSourceType: candidate.contact.sourceType,
-        githubUsername: candidate.githubUsername,
-        githubUrl: candidate.githubUrl,
-        websiteUrl: candidate.websiteUrl,
-        company: candidate.company,
-        project: candidate.project,
-        projectKey: candidate.projectKey,
-        projectDescription: candidate.projectDescription,
-        category: candidate.category,
-        confidenceScore: candidate.contactQuality / 100,
-      });
-      if (result.created) {
-        found++;
-      } else {
-        duplicates++;
-      }
-    }
-    return { found, duplicates };
-  }
-
-  async research(limit: number): Promise<{ researched: number; failed: number }> {
-    const prospects = this.repository.listProspects({ status: "found", limit });
-    let researched = 0;
-    let failed = 0;
-    for (const prospect of prospects) {
-      try {
-        const note = await this.researcher.research(prospect);
-        this.repository.saveResearch(prospect.id, note);
-        researched++;
-      } catch (error) {
-        failed++;
-        logger.warn({ prospectId: prospect.id, error }, "Prospect research failed");
-      }
-    }
-    return { researched, failed };
-  }
-
-  score(limit = 200): { scored: number } {
-    const prospects = this.repository.listProspects({ status: "researched", limit });
-    for (const prospect of prospects) {
-      const research = this.repository.getResearch(prospect.id);
-      if (!research) continue;
-      const result = scoreProspect(prospect, research);
-      this.repository.setScore(prospect.id, result.score, result.breakdown);
-    }
-    return { scored: prospects.length };
-  }
-
-  async draftApproved(
-    count: number,
-    options: { dryRun?: boolean; scoreThreshold?: number } = {},
-  ): Promise<{ drafted: number; failed: number; rows: unknown[] }> {
-    const settings = this.repository.getSettings();
-    const dryRun = options.dryRun ?? settings.dryRun;
-    const prospects = this.repository
-      .listProspects({
-        status: "approved",
-        minScore: options.scoreThreshold ?? settings.fitScoreThreshold,
-        limit: count * 3,
-      })
-      .slice(0, count);
-    let drafted = 0;
-    let failed = 0;
-    const rows: unknown[] = [];
-
-    for (const prospect of prospects) {
-      try {
-        if (
-          this.repository.isBlocked(prospect.email, prospect.domain) ||
-          this.repository.isSuppressed(prospect.email, prospect.domain)
-        ) {
-          throw new Error("Contact is blocked or suppressed.");
-        }
-        const research = this.repository.getResearch(prospect.id);
-        if (!research || research.evidenceUrls.length === 0 || !research.personalizationDetail) {
-          throw new Error("Public personalization evidence is required.");
-        }
-        const copy = await this.copywriter.write(prospect, research);
-        const validation = assertDraftContent(copy.subject, copy.body);
-        const evidenceUrls = [...new Set([prospect.emailSourceUrl, ...research.evidenceUrls])];
-        const draft = this.repository.saveDraft(prospect.id, {
-          ...copy,
-          wordCount: validation.wordCount,
-          links: extractLinks(`${copy.subject}\n${copy.body}`),
-          evidenceUrls,
-          personalizationClaims: [research.personalizationDetail],
-          validationStatus: "send_ready",
-          validationErrors: [],
-        });
-        drafted++;
-        rows.push({
-          recipient: prospect.email,
-          score: prospect.fitScore,
-          draftId: draft.id,
-          result: dryRun ? "local dry-run draft" : "local draft",
-        });
-      } catch (error) {
-        failed++;
-        rows.push({
-          recipient: prospect.email,
-          score: prospect.fitScore,
-          result: error instanceof Error ? error.message : "Unknown failure",
-        });
-      }
-    }
-    return { drafted, failed, rows };
-  }
 
   approveDraft(localDraftId: string, approvedBy = "operator"): EmailDraft {
     const draft = this.getSendableDraft(localDraftId);

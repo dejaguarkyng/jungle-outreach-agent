@@ -29,6 +29,14 @@ Errors are emitted in `run_summary.json` source signals. Credential values and
 authorization query parameters are redacted. A source failure returns partial
 results and does not crash unrelated adapters.
 
+Official pages are also inspected for public contact methods. Supported
+provenance includes email, contact and partnership forms, booking links,
+business phone and WhatsApp, GitHub profiles and Discussions, public social
+profiles, community forums, and feature-request portals. A prospect can qualify
+without email when another public contact point exists. Discovery records the
+source URL, confidence, public-listing status, and authorization status; channel
+policy still determines whether a method may be used for delivery.
+
 ## Adding An Adapter
 
 1. Add the stable ID to `CORE_SOURCES` or `RESTRICTED_SOURCES`.

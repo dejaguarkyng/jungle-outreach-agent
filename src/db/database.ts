@@ -34,15 +34,16 @@ export function closeDatabase(): void {
 }
 
 function migrate(db: Database.Database): void {
+  migrateProspectsForContactPoints(db);
   db.exec(`
     CREATE TABLE IF NOT EXISTS prospects (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       role_title TEXT,
-      email TEXT NOT NULL,
-      normalized_email TEXT NOT NULL UNIQUE,
-      email_source_url TEXT NOT NULL,
-      email_source_type TEXT NOT NULL,
+      email TEXT NOT NULL DEFAULT '',
+      normalized_email TEXT UNIQUE,
+      email_source_url TEXT NOT NULL DEFAULT '',
+      email_source_type TEXT NOT NULL DEFAULT 'official_website',
       github_username TEXT,
       github_url TEXT,
       website_url TEXT,
@@ -55,7 +56,7 @@ function migrate(db: Database.Database): void {
       score_breakdown TEXT,
       confidence_score REAL,
       status TEXT NOT NULL DEFAULT 'found',
-      domain TEXT NOT NULL,
+      domain TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -214,6 +215,97 @@ function migrate(db: Database.Database): void {
       metadata TEXT,
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS contact_points (
+      id TEXT PRIMARY KEY,
+      prospect_id TEXT NOT NULL REFERENCES prospects(id) ON DELETE CASCADE,
+      type TEXT NOT NULL,
+      value TEXT NOT NULL,
+      normalized_value TEXT NOT NULL,
+      source_url TEXT NOT NULL,
+      publicly_listed INTEGER NOT NULL DEFAULT 1,
+      authorized INTEGER NOT NULL DEFAULT 0,
+      confidence REAL NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(prospect_id, type, normalized_value)
+    );
+    CREATE INDEX IF NOT EXISTS idx_contact_points_lookup
+      ON contact_points(type, normalized_value, status);
+
+    CREATE TABLE IF NOT EXISTS proof_artifacts (
+      id TEXT PRIMARY KEY,
+      prospect_id TEXT NOT NULL REFERENCES prospects(id) ON DELETE CASCADE,
+      run_id TEXT REFERENCES outreach_runs(id) ON DELETE SET NULL,
+      type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      uri TEXT,
+      evidence_ids TEXT NOT NULL DEFAULT '[]',
+      junglegrid_job_id TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS conversations (
+      id TEXT PRIMARY KEY,
+      prospect_id TEXT NOT NULL REFERENCES prospects(id) ON DELETE CASCADE,
+      campaign_id TEXT NOT NULL,
+      contact_point_id TEXT NOT NULL REFERENCES contact_points(id),
+      channel TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft',
+      opportunity_state TEXT NOT NULL DEFAULT 'qualified',
+      summary TEXT NOT NULL DEFAULT '',
+      open_questions TEXT NOT NULL DEFAULT '[]',
+      commitments TEXT NOT NULL DEFAULT '[]',
+      objections TEXT NOT NULL DEFAULT '[]',
+      follow_up_at TEXT,
+      opted_out_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS policy_decisions (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      mode TEXT NOT NULL,
+      decision TEXT NOT NULL,
+      reasons TEXT NOT NULL DEFAULT '[]',
+      junglegrid_job_id TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS messages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      legacy_email_draft_id TEXT REFERENCES email_drafts(id) ON DELETE SET NULL,
+      direction TEXT NOT NULL,
+      channel TEXT NOT NULL,
+      subject TEXT,
+      body TEXT NOT NULL,
+      status TEXT NOT NULL,
+      classification TEXT,
+      validation_status TEXT NOT NULL,
+      junglegrid_job_id TEXT,
+      policy_decision_id TEXT REFERENCES policy_decisions(id) ON DELETE SET NULL,
+      external_message_id TEXT,
+      created_at TEXT NOT NULL,
+      sent_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS conversation_jobs (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      junglegrid_job_id TEXT UNIQUE,
+      stage TEXT NOT NULL,
+      status TEXT NOT NULL,
+      failure_reason TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      completed_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_conversation_jobs_conversation
+      ON conversation_jobs(conversation_id, created_at);
   `);
 
   ensureColumn(db, "outreach_runs", "mode", "TEXT NOT NULL DEFAULT 'local-template'");
@@ -238,6 +330,9 @@ function migrate(db: Database.Database): void {
   ensureColumn(db, "email_drafts", "zeptomail_message_id", "TEXT");
   ensureColumn(db, "email_drafts", "zeptomail_request_id", "TEXT");
   ensureColumn(db, "email_drafts", "zeptomail_error", "TEXT");
+  ensureColumn(db, "prospects", "qualification_junglegrid_job_id", "TEXT");
+  ensureColumn(db, "prospects", "scoring_junglegrid_job_id", "TEXT");
+  ensureColumn(db, "research_notes", "junglegrid_job_id", "TEXT");
 
   const env = getEnv();
   db.prepare(
@@ -260,6 +355,102 @@ function migrate(db: Database.Database): void {
      ))
      WHERE evidence_urls = '[]'`,
   ).run();
+  backfillContactPointsAndMessages(db);
+}
+
+function migrateProspectsForContactPoints(db: Database.Database): void {
+  const table = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'prospects'")
+    .get();
+  if (!table) return;
+  const columns = db.prepare("PRAGMA table_info(prospects)").all() as Array<{
+    name: string;
+    notnull: number;
+  }>;
+  if (columns.find((column) => column.name === "normalized_email")?.notnull !== 1) return;
+  db.pragma("foreign_keys = OFF");
+  db.exec(`
+    CREATE TABLE prospects_contact_migration (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, role_title TEXT,
+      email TEXT NOT NULL DEFAULT '', normalized_email TEXT UNIQUE,
+      email_source_url TEXT NOT NULL DEFAULT '',
+      email_source_type TEXT NOT NULL DEFAULT 'official_website',
+      github_username TEXT, github_url TEXT, website_url TEXT, company TEXT,
+      project TEXT NOT NULL, project_key TEXT NOT NULL, project_description TEXT,
+      category TEXT NOT NULL, fit_score INTEGER, score_breakdown TEXT,
+      confidence_score REAL, status TEXT NOT NULL DEFAULT 'found',
+      domain TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    INSERT INTO prospects_contact_migration SELECT * FROM prospects;
+    DROP TABLE prospects;
+    ALTER TABLE prospects_contact_migration RENAME TO prospects;
+  `);
+  db.pragma("foreign_keys = ON");
+}
+
+function backfillContactPointsAndMessages(db: Database.Database): void {
+  const timestamp = new Date().toISOString();
+  db.prepare(
+    `INSERT OR IGNORE INTO contact_points (
+      id, prospect_id, type, value, normalized_value, source_url, publicly_listed,
+      authorized, confidence, status, created_at, updated_at
+    )
+    SELECT lower(hex(randomblob(16))), id, 'email', email, normalized_email,
+      email_source_url, 1, 1, COALESCE(confidence_score, 0.5), 'active', created_at, updated_at
+    FROM prospects WHERE email <> '' AND normalized_email IS NOT NULL`,
+  ).run();
+  const drafts = db
+    .prepare(
+      `SELECT d.*, p.id AS prospect_id, cp.id AS contact_point_id
+       FROM email_drafts d
+       JOIN prospects p ON p.id = d.prospect_id
+       JOIN contact_points cp ON cp.prospect_id = p.id AND cp.type = 'email'
+       WHERE NOT EXISTS (
+         SELECT 1 FROM messages m WHERE m.legacy_email_draft_id = d.id
+       )`,
+    )
+    .all() as Array<Record<string, unknown>>;
+  for (const draft of drafts) {
+    const conversationId = randomId();
+    db.prepare(
+      `INSERT INTO conversations (
+        id, prospect_id, campaign_id, contact_point_id, channel, status,
+        opportunity_state, created_at, updated_at
+      ) VALUES (?, ?, 'jungle-grid', ?, 'email', ?, 'qualified', ?, ?)`,
+    ).run(
+      conversationId,
+      draft.prospect_id,
+      draft.contact_point_id,
+      draft.delivery_status === "sent" ? "active" : "draft",
+      draft.created_at ?? timestamp,
+      draft.updated_at ?? timestamp,
+    );
+    db.prepare(
+      `INSERT INTO messages (
+        id, conversation_id, legacy_email_draft_id, direction, channel, subject,
+        body, status, validation_status, external_message_id, created_at, sent_at
+      ) VALUES (?, ?, ?, 'outbound', 'email', ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      randomId(),
+      conversationId,
+      draft.id,
+      draft.subject,
+      draft.body,
+      draft.delivery_status === "sent"
+        ? "sent"
+        : draft.approval_status === "approved"
+          ? "approved"
+          : "approval_required",
+      draft.validation_status,
+      draft.zeptomail_message_id,
+      draft.created_at ?? timestamp,
+      draft.sent_at,
+    );
+  }
+}
+
+function randomId(): string {
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
 }
 
 function ensureColumn(

@@ -22,8 +22,9 @@ the isolated Python workload.
    polls status, retrieves artifact metadata and signed downloads,
    parses every file, and revalidates all drafts.
 6. Valid drafts are persisted locally. Invalid bundles fail closed.
-7. Valid drafts are stored as internal review records with approval and delivery
-   status.
+7. Valid drafts become the first outbound message in a durable conversation.
+   The email-draft row remains as a compatibility view for existing review and
+   delivery consumers.
 8. An operator reviews evidence, edits the copy if needed, and explicitly
    approves or rejects the draft.
 9. ZeptoMail is called only when an approved draft is manually sent from the
@@ -40,6 +41,37 @@ the isolated Python workload.
 
 The worker has no ZeptoMail credentials. The backend never trusts worker
 validation alone.
+
+Scored prospects may carry proof-of-value artifacts with evidence IDs and the
+Jungle Grid job ID that produced them. Ingestion attaches those artifacts to
+the existing prospect.
+
+Inbound messages append to the existing conversation through
+`POST /api/conversations/:id/inbound`. The API accepts raw inbound content,
+submits a managed `conversation-turn-qwen` workload, and persists the returned
+classification, summary, next action, response, semantic validation, and real
+Jungle Grid job ID. Opt-outs immediately close the conversation, disable the
+contact point, and create a suppression.
+
+Scheduled follow-ups use the same managed contract with a
+`scheduled_follow_up` trigger. Due conversations are selected locally, while
+evaluation and response generation remain Jungle Grid-backed.
+`POST /api/conversations/evaluate-due` processes a bounded batch and records a
+conversation job for every evaluation.
+
+Autonomy uses one fail-closed policy gate with `draft_only`,
+`confirmation_required`, and `policy_autonomous` modes. Qualification,
+provenance, semantic validation, channel policy, campaign state, limits,
+opt-out, escalation, and Jungle Grid execution must all pass before an
+autonomous send.
+
+## Unified Pipeline
+
+The application has one production pipeline: the Next.js orchestrator submits
+`workers/outreach/outreach_worker.py` through Jungle Grid. The historical
+Python lead engines and local TypeScript discovery/scoring/drafting path were
+removed. The published `jungle-grid-leads` command is now a compatibility
+adapter that submits this same managed pipeline.
 
 `run_summary.json` records `status`, enabled/succeeded/degraded/failed sources,
 adapter `source_signals`, raw and deduplicated counts, qualified/excluded

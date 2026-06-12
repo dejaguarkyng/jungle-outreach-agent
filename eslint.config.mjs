@@ -13,8 +13,6 @@ const config = [
       ".next/**",
       "node_modules/**",
       "data/**",
-      "src/jungle_grid_leads/**",
-      "tests/**",
     ],
   },
 ];

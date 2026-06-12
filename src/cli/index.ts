@@ -33,13 +33,14 @@ function getCategory(value?: string) {
 
 async function executeRun(
   mode: OutreachMode,
-  options: { count: number; category?: string; dryRun?: boolean },
+  options: { count: number; category?: string; dryRun?: boolean; campaignId?: string },
 ) {
   const result = await runOutreach({
     targetCount: options.count,
     category: getCategory(options.category),
     dryRun: options.dryRun ? true : undefined,
     mode,
+    campaignId: options.campaignId,
   });
   console.log(`Run ${result.runId}`);
   console.log(JSON.stringify(result.summary, null, 2));
@@ -47,12 +48,17 @@ async function executeRun(
 
 program
   .command("discover")
-  .option("--limit <number>", "maximum candidates to inspect", positiveInteger, 50)
+  .description("Legacy alias for a complete Jungle Grid Qwen pipeline run.")
+  .option("--limit <number>", "target validated prospects", positiveInteger, 50)
   .option("--category <category>", "focus category")
-  .action(async (options) => {
-    const result = await new OutreachService().discover(options.limit, getCategory(options.category));
-    console.table([result]);
-  });
+  .option("--campaign-id <campaign>", "campaign configuration ID", "jungle-grid")
+  .action((options) =>
+    executeRun("junglegrid-qwen", {
+      count: options.limit,
+      category: options.category,
+      campaignId: options.campaignId,
+    }),
+  );
 
 program
   .command("research")
@@ -102,6 +108,7 @@ for (const [command, mode, description] of [
     .option("--count <number>", "target validated drafts", positiveInteger, 17)
     .option("--category <category>", "focus category")
     .option("--dry-run", "retain dry-run safety setting")
+    .option("--campaign-id <campaign>", "campaign configuration ID", "jungle-grid")
     .action((options) => executeRun(mode, options));
 }
 
@@ -218,10 +225,12 @@ program
   .option("--mode <mode>", "execution mode", "junglegrid-qwen")
   .option("--count <number>", "target validated drafts", positiveInteger, 17)
   .option("--category <category>", "focus category")
+  .option("--campaign-id <campaign>", "campaign configuration ID", "jungle-grid")
   .action((options) =>
     executeRun(outreachModeSchema.parse(options.mode), {
       count: options.count,
       category: options.category,
+      campaignId: options.campaignId,
     }),
   );
 

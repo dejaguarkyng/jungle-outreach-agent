@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { JungleGridWorkloadProvider } from "@/src/providers/junglegrid-workload-provider";
+import { loadCampaignConfiguration } from "@/src/services/campaign-config";
 import type { AppEnv } from "@/src/config/env";
 
 const env = {
@@ -76,6 +77,36 @@ describe("Jungle Grid provider", () => {
     const payload = JSON.parse(String(fetchMock.mock.calls[0][1].body));
     expect(payload.command).toContain("full-run-qwen");
     expect(payload.metadata.execution_backend).toBe("jungle_grid");
+  });
+
+  it("submits conversation turns as managed Qwen workloads", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ job_id: "job-turn", status: "queued" }), {
+        status: 202,
+      }),
+    );
+    const provider = new JungleGridWorkloadProvider(env, fetchMock);
+    await provider.submitConversationTurn(
+      {
+        conversation_id: "conversation-1",
+        channel: "email",
+        inbound_body: "Can you send details?",
+        prospect: { id: "prospect-1" },
+        contact_point: { type: "email" },
+        evidence: [],
+        proof_artifacts: [],
+        history: [],
+      },
+      loadCampaignConfiguration("jungle-grid"),
+    );
+    const payload = JSON.parse(String(fetchMock.mock.calls[0][1].body));
+    expect(payload.command).toContain("conversation-turn-qwen");
+    expect(payload.expected_artifacts).toEqual([
+      "/workspace/artifacts/conversation_result.json",
+    ]);
+    expect(payload.environment.LLM_FALLBACK_MODE).toBe("disabled");
+    expect(payload.metadata.pipeline_stages).toContain("reply_classification");
+    expect(payload.metadata.pipeline_stages).toContain("semantic_validation");
   });
 
   it("retrieves events and cancels through the job lifecycle API", async () => {

@@ -1,4 +1,4 @@
-"""Jungle Grid local lead-hunting pipeline."""
+"""Compatibility entry point for the unified Openline pipeline."""
 
 __all__ = ["__version__"]
 

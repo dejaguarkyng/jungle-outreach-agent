@@ -10,6 +10,11 @@
     "senderName": "Benedict",
     "signature": "Benedict"
   },
+  "businessInformation": {
+    "description": "Jungle Grid provides managed execution for AI and long-running workloads.",
+    "website": "https://junglegrid.dev"
+  },
+  "customerProblems": ["unreliable background execution", "missing retries and artifacts", "capacity routing"],
   "idealCustomerProfile": {
     "description": "Builders operating AI, agent, inference, training, GPU, or durable background workloads.",
     "categories": ["agent_framework", "mcp", "ai_infrastructure", "inference_training", "agent_compute", "workflow_automation", "llm_application", "open_source_ai"],
@@ -30,6 +35,18 @@
     "positioning": "Jungle Grid can provide the durable execution layer behind those workloads, including retries, logs, and artifacts.",
     "callToAction": "If that is a live problem for you, the shortest overview is",
     "subjectPrefix": "Jungle Grid and"
+  },
+  "proofOfValue": {
+    "strategy": "technical_integration_proposal",
+    "artifactTypes": ["technical_integration_proposal", "implementation_plan"]
+  },
+  "channels": ["email", "official_contact_form", "github_discussions"],
+  "conversionGoal": "qualified technical evaluation",
+  "autonomy": {
+    "mode": "confirmation_required",
+    "maximumFollowUps": 2,
+    "minimumScore": 75,
+    "escalationTerms": ["security", "legal", "contract", "pricing"]
   },
   "execution": {
     "researchModel": "qwen2.5:3b",

@@ -56,6 +56,7 @@ export const campaignConfigurationSchema = z.object({
   workspaceId: z.string().trim().min(1),
   campaignId: z.string().trim().min(1),
   name: z.string().trim().min(1),
+  active: z.boolean().default(true),
   offer: z.object({
     name: z.string().trim().min(1),
     description: z.string().trim().min(1),
@@ -63,6 +64,13 @@ export const campaignConfigurationSchema = z.object({
     senderName: z.string().trim().min(1),
     signature: z.string().trim().min(1),
   }),
+  businessInformation: z
+    .object({
+      description: z.string().trim().min(1),
+      website: z.string().url(),
+    })
+    .optional(),
+  customerProblems: z.array(z.string().trim().min(1)).default([]),
   idealCustomerProfile: z.object({
     description: z.string().trim().min(1),
     categories: z.array(prospectCategorySchema).min(1),
@@ -84,6 +92,30 @@ export const campaignConfigurationSchema = z.object({
     callToAction: z.string().trim().min(1),
     subjectPrefix: z.string().trim().min(1),
   }),
+  proofOfValue: z
+    .object({
+      strategy: z.string().trim().min(1),
+      artifactTypes: z.array(z.string().trim().min(1)).min(1),
+    })
+    .default({
+      strategy: "implementation_plan",
+      artifactTypes: ["implementation_plan"],
+    }),
+  channels: z.array(z.string().trim().min(1)).default(["email"]),
+  conversionGoal: z.string().trim().min(1).default("qualified_conversation"),
+  autonomy: z
+    .object({
+      mode: z.enum(["draft_only", "confirmation_required", "policy_autonomous"]),
+      maximumFollowUps: z.number().int().min(0).max(20),
+      minimumScore: z.number().int().min(0).max(100),
+      escalationTerms: z.array(z.string().trim().min(1)),
+    })
+    .default({
+      mode: "draft_only",
+      maximumFollowUps: 0,
+      minimumScore: 70,
+      escalationTerms: ["legal", "security", "contract", "pricing"],
+    }),
   execution: z.object({
     researchModel: z.string().trim().min(1),
     scoringModel: z.string().trim().min(1),
@@ -105,12 +137,52 @@ export const scoreBreakdownSchema = z.object({
 
 export type ScoreBreakdown = z.infer<typeof scoreBreakdownSchema>;
 
+export const contactPointTypes = [
+  "email",
+  "official_contact_form",
+  "github_profile",
+  "github_discussions",
+  "github_issue",
+  "linkedin_profile",
+  "linkedin_company",
+  "discord",
+  "slack",
+  "x",
+  "facebook_page",
+  "instagram_business",
+  "whatsapp_business",
+  "business_phone",
+  "booking_link",
+  "integration_form",
+  "partnership_form",
+  "marketplace_form",
+  "community_forum",
+  "feature_request_portal",
+] as const;
+export const contactPointTypeSchema = z.enum(contactPointTypes);
+export type ContactPointType = z.infer<typeof contactPointTypeSchema>;
+
+export const contactPointSchema = z.object({
+  id: z.string(),
+  prospectId: z.string(),
+  type: contactPointTypeSchema,
+  value: z.string().min(1),
+  sourceUrl: z.string().url(),
+  publiclyListed: z.boolean(),
+  authorized: z.boolean(),
+  confidence: z.number().min(0).max(1),
+  status: z.enum(["active", "invalid", "opted_out", "blocked"]),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type ContactPoint = z.infer<typeof contactPointSchema>;
+
 export const prospectSchema = z.object({
   id: z.string(),
   name: z.string().min(1),
   roleTitle: z.string().nullable(),
-  email: z.string().email(),
-  emailSourceUrl: z.string().url(),
+  email: z.union([z.string().email(), z.literal("")]),
+  emailSourceUrl: z.union([z.string().url(), z.literal("")]),
   emailSourceType: z.enum([
     "github_profile",
     "repository_readme",
@@ -130,7 +202,10 @@ export const prospectSchema = z.object({
   scoreBreakdown: scoreBreakdownSchema.nullable(),
   confidenceScore: z.number().min(0).max(1).nullable(),
   status: prospectStatusSchema,
-  domain: z.string().min(1),
+  domain: z.string(),
+  contactPoints: z.array(contactPointSchema).optional(),
+  qualificationJunglegridJobId: z.string().nullable().optional(),
+  scoringJunglegridJobId: z.string().nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -144,6 +219,7 @@ export const researchNoteSchema = z.object({
   personalizationDetail: z.string().min(1),
   junglegridRelevance: z.string().min(1),
   evidenceUrls: z.array(z.string().url()).min(1),
+  junglegridJobId: z.string().nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -206,6 +282,102 @@ export const emailDraftSchema = z.object({
 });
 
 export type EmailDraft = z.infer<typeof emailDraftSchema>;
+
+export const proofArtifactSchema = z.object({
+  id: z.string(),
+  prospectId: z.string(),
+  runId: z.string().nullable(),
+  type: z.string().min(1),
+  title: z.string().min(1),
+  content: z.string().min(1),
+  uri: z.string().nullable(),
+  evidenceIds: z.array(z.string()),
+  junglegridJobId: z.string().min(1),
+  createdAt: z.string(),
+});
+export type ProofArtifact = z.infer<typeof proofArtifactSchema>;
+
+export const conversationSchema = z.object({
+  id: z.string(),
+  prospectId: z.string(),
+  campaignId: z.string(),
+  contactPointId: z.string(),
+  channel: contactPointTypeSchema,
+  status: z.enum(["draft", "active", "waiting", "won", "lost", "opted_out", "closed"]),
+  opportunityState: z.enum(["unqualified", "qualified", "engaged", "evaluating", "committed", "won", "lost"]),
+  summary: z.string(),
+  openQuestions: z.array(z.string()),
+  commitments: z.array(z.string()),
+  objections: z.array(z.string()),
+  followUpAt: z.string().nullable(),
+  optedOutAt: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type Conversation = z.infer<typeof conversationSchema>;
+
+export const messageSchema = z.object({
+  id: z.string(),
+  conversationId: z.string(),
+  direction: z.enum(["inbound", "outbound"]),
+  channel: contactPointTypeSchema,
+  body: z.string().min(1),
+  subject: z.string().nullable(),
+  status: z.enum(["draft", "approval_required", "approved", "sent", "received", "blocked", "failed"]),
+  classification: z.string().nullable(),
+  validationStatus: draftValidationStatusSchema,
+  junglegridJobId: z.string().nullable(),
+  policyDecisionId: z.string().nullable(),
+  externalMessageId: z.string().nullable(),
+  createdAt: z.string(),
+  sentAt: z.string().nullable(),
+});
+export type Message = z.infer<typeof messageSchema>;
+
+export const autonomyModeSchema = z.enum([
+  "draft_only",
+  "confirmation_required",
+  "policy_autonomous",
+]);
+export type AutonomyMode = z.infer<typeof autonomyModeSchema>;
+
+export const conversationTurnResultSchema = z.object({
+  schema_version: z.literal("1.0"),
+  classification: z.enum([
+    "interested",
+    "question",
+    "objection",
+    "not_now",
+    "opt_out",
+    "wrong_person",
+    "other",
+  ]),
+  summary: z.string().min(1),
+  open_questions: z.array(z.string()),
+  commitments: z.array(z.string()),
+  objections: z.array(z.string()),
+  follow_up_at: z.string().nullable(),
+  opportunity_state: z.enum([
+    "qualified",
+    "engaged",
+    "evaluating",
+    "committed",
+    "won",
+    "lost",
+  ]),
+  next_action: z.enum(["respond", "follow_up_later", "escalate", "close"]),
+  response_subject: z.string().nullable(),
+  response_body: z.string().nullable(),
+  validation_status: z.enum([
+    "send_ready",
+    "manual_review_required",
+    "regeneration_required",
+    "excluded",
+  ]),
+  validation_reasons: z.array(z.string()),
+  escalation_required: z.boolean(),
+});
+export type ConversationTurnResult = z.infer<typeof conversationTurnResultSchema>;
 
 export const suppressionSchema = z.object({
   id: z.string(),
@@ -310,15 +482,27 @@ export const artifactProspectSchema = z.object({
   entity_id: z.string().optional(),
   canonical_entity_id: z.string().optional(),
   name: z.string().min(1),
-  email: z.string().email(),
-  email_source_url: z.string().url(),
+  email: z.string().email().optional(),
+  email_source_url: z.string().url().optional(),
   email_source_type: z.enum([
     "github_profile",
     "repository_readme",
     "official_website",
     "project_docs",
     "package_page",
-  ]),
+  ]).optional(),
+  contact_points: z
+    .array(
+      z.object({
+        type: contactPointTypeSchema,
+        value: z.string().min(1),
+        source_url: z.string().url(),
+        publicly_listed: z.boolean().default(true),
+        authorized: z.boolean().default(false),
+        confidence: z.number().min(0).max(1),
+      }),
+    )
+    .optional(),
   project: z.string().min(1),
   project_key: z.string().optional(),
   project_url: z.string().url(),
@@ -357,6 +541,7 @@ export const researchArtifactSchema = z.object({
   semantic_qualification_reason: z.string().min(1).optional(),
   semantic_score_explanation: z.string().min(1).optional(),
   semantic_suggested_angle: z.string().min(1).optional(),
+  junglegrid_job_id: z.string().min(1).optional(),
 });
 
 export const scoredProspectArtifactSchema = artifactProspectSchema.extend({
@@ -374,6 +559,19 @@ export const scoredProspectArtifactSchema = artifactProspectSchema.extend({
   score_explanation: z.string().min(1).optional(),
   outreach_priority: z.enum(["high", "medium", "low"]).optional(),
   excluded: z.boolean().optional(),
+  proof_artifacts: z
+    .array(
+      z.object({
+        type: z.string().min(1),
+        title: z.string().min(1),
+        content: z.string().min(1),
+        uri: z.string().nullable().optional(),
+        evidence_ids: z.array(z.string()),
+        junglegrid_job_id: z.string().min(1),
+      }),
+    )
+    .optional(),
+  junglegrid_job_id: z.string().min(1).optional(),
 });
 
 export const runSummaryArtifactSchema = z.object({
@@ -386,6 +584,7 @@ export const runSummaryArtifactSchema = z.object({
   campaign_name: z.string().optional(),
   offer_name: z.string().optional(),
   execution_backend: z.enum(["jungle_grid", "jungle_grid_mock"]).optional(),
+  junglegrid_job_id: z.string().optional(),
   production_eligible: z.boolean().optional(),
   score_dimension_labels: z.record(z.string()).optional(),
   job_contract_schema_version: z.string().optional(),

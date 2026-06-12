@@ -10,7 +10,11 @@ import {
   suppressionSchema,
   type DraftApprovalStatus,
   type DraftDeliveryStatus,
+  type ContactPoint,
+  type ContactPointType,
+  type Conversation,
   type EmailDraft,
+  type Message,
   type OutreachRun,
   type OutreachMode,
   type OutreachSettings,
@@ -20,15 +24,16 @@ import {
   type ResearchNote,
   type ScoreBreakdown,
   type Suppression,
+  type ProofArtifact,
 } from "@/src/domain/schemas";
 import { getEnv } from "@/src/config/env";
 
 type ProspectInput = {
   name: string;
   roleTitle?: string | null;
-  email: string;
-  emailSourceUrl: string;
-  emailSourceType: Prospect["emailSourceType"];
+  email?: string;
+  emailSourceUrl?: string;
+  emailSourceType?: Prospect["emailSourceType"];
   githubUsername?: string | null;
   githubUrl?: string | null;
   websiteUrl?: string | null;
@@ -65,6 +70,8 @@ type DraftInput = {
     | "passed"
     | "failed";
   validationErrors: string[];
+  campaignId?: string;
+  junglegridJobId?: string | null;
 };
 
 type WorkerExclusions = {
@@ -132,6 +139,9 @@ function mapProspect(row: Record<string, unknown>): Prospect {
     domain: row.domain,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    contactPoints: [],
+    qualificationJunglegridJobId: row.qualification_junglegrid_job_id ?? null,
+    scoringJunglegridJobId: row.scoring_junglegrid_job_id ?? null,
   });
 }
 
@@ -145,6 +155,7 @@ function mapResearch(row: Record<string, unknown>): ResearchNote {
     evidenceUrls: parseJson<string[]>(row.evidence_urls, []),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    junglegridJobId: row.junglegrid_job_id ?? null,
   });
 }
 
@@ -186,6 +197,61 @@ function mapSuppression(row: Record<string, unknown>): Suppression {
     source: row.source,
     createdAt: row.created_at,
   });
+}
+
+function mapContactPoint(row: Record<string, unknown>): ContactPoint {
+  return {
+    id: String(row.id),
+    prospectId: String(row.prospect_id),
+    type: row.type as ContactPointType,
+    value: String(row.value),
+    sourceUrl: String(row.source_url),
+    publiclyListed: Boolean(row.publicly_listed),
+    authorized: Boolean(row.authorized),
+    confidence: Number(row.confidence),
+    status: row.status as ContactPoint["status"],
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+function mapConversation(row: Record<string, unknown>): Conversation {
+  return {
+    id: String(row.id),
+    prospectId: String(row.prospect_id),
+    campaignId: String(row.campaign_id),
+    contactPointId: String(row.contact_point_id),
+    channel: row.channel as ContactPointType,
+    status: row.status as Conversation["status"],
+    opportunityState: row.opportunity_state as Conversation["opportunityState"],
+    summary: String(row.summary ?? ""),
+    openQuestions: parseJson<string[]>(row.open_questions, []),
+    commitments: parseJson<string[]>(row.commitments, []),
+    objections: parseJson<string[]>(row.objections, []),
+    followUpAt: row.follow_up_at ? String(row.follow_up_at) : null,
+    optedOutAt: row.opted_out_at ? String(row.opted_out_at) : null,
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+function mapMessage(row: Record<string, unknown>): Message {
+  return {
+    id: String(row.id),
+    conversationId: String(row.conversation_id),
+    direction: row.direction as Message["direction"],
+    channel: row.channel as ContactPointType,
+    body: String(row.body),
+    subject: row.subject ? String(row.subject) : null,
+    status: row.status as Message["status"],
+    classification: row.classification ? String(row.classification) : null,
+    validationStatus: row.validation_status as Message["validationStatus"],
+    junglegridJobId: row.junglegrid_job_id ? String(row.junglegrid_job_id) : null,
+    policyDecisionId: row.policy_decision_id ? String(row.policy_decision_id) : null,
+    externalMessageId: row.external_message_id ? String(row.external_message_id) : null,
+    createdAt: String(row.created_at),
+    sentAt: row.sent_at ? String(row.sent_at) : null,
+  };
 }
 
 function mapRun(row: Record<string, unknown>): OutreachRun {
@@ -238,21 +304,28 @@ export class OutreachRepository {
   constructor(private readonly db: Database.Database = getDatabase()) {}
 
   upsertProspect(input: ProspectInput): { prospect: Prospect; created: boolean } {
-    const normalizedEmail = input.email.trim().toLowerCase();
-    const domain = normalizedEmail.split("@")[1];
+    const email = input.email?.trim() ?? "";
+    const normalizedEmail = email ? email.toLowerCase() : null;
+    const domain = normalizedEmail?.split("@")[1] ?? "";
     const existing = this.db
       .prepare(
         `SELECT * FROM prospects
-         WHERE normalized_email = ?
+         WHERE (? IS NOT NULL AND normalized_email = ?)
             OR (? IS NOT NULL AND lower(github_username) = lower(?))
             OR project_key = ?
          LIMIT 1`,
       )
-      .get(normalizedEmail, input.githubUsername ?? null, input.githubUsername ?? null, input.projectKey) as
+      .get(
+        normalizedEmail,
+        normalizedEmail,
+        input.githubUsername ?? null,
+        input.githubUsername ?? null,
+        input.projectKey,
+      ) as
       | Record<string, unknown>
       | undefined;
 
-    if (existing) return { prospect: mapProspect(existing), created: false };
+    if (existing) return { prospect: this.getProspect(String(existing.id))!, created: false };
 
     const id = randomUUID();
     const timestamp = now();
@@ -268,10 +341,10 @@ export class OutreachRepository {
         id,
         input.name,
         input.roleTitle ?? null,
-        input.email,
+        email,
         normalizedEmail,
-        input.emailSourceUrl,
-        input.emailSourceType,
+        input.emailSourceUrl ?? "",
+        input.emailSourceType ?? "official_website",
         input.githubUsername ?? null,
         input.githubUrl ?? null,
         input.websiteUrl ?? null,
@@ -286,8 +359,18 @@ export class OutreachRepository {
         timestamp,
       );
     this.audit("system", "prospect.created", "prospect", id, "success", {
-      source: input.emailSourceType,
+      source: input.emailSourceType ?? "official_website",
     });
+    if (email) {
+      this.addContactPoint(id, {
+        type: "email",
+        value: email,
+        sourceUrl: input.emailSourceUrl ?? "",
+        publiclyListed: true,
+        authorized: true,
+        confidence: input.confidenceScore ?? 0.5,
+      });
+    }
     return { prospect: this.getProspect(id)!, created: true };
   }
 
@@ -330,14 +413,19 @@ export class OutreachRepository {
          ORDER BY COALESCE(fit_score, -1) DESC, created_at DESC LIMIT ?`,
       )
       .all(...params) as Record<string, unknown>[];
-    return rows.map(mapProspect);
+    return rows.map((row) => {
+      const prospect = mapProspect(row);
+      return { ...prospect, contactPoints: this.listContactPoints(prospect.id) };
+    });
   }
 
   getProspect(id: string): Prospect | null {
     const row = this.db.prepare("SELECT * FROM prospects WHERE id = ?").get(id) as
       | Record<string, unknown>
       | undefined;
-    return row ? mapProspect(row) : null;
+    if (!row) return null;
+    const prospect = mapProspect(row);
+    return { ...prospect, contactPoints: this.listContactPoints(prospect.id) };
   }
 
   updateProspect(
@@ -380,6 +468,21 @@ export class OutreachRepository {
       .run(fitScore, JSON.stringify(breakdown), now(), id);
   }
 
+  setScoreWithExecution(
+    id: string,
+    fitScore: number,
+    breakdown: ScoreBreakdown,
+    junglegridJobId: string | null,
+  ): void {
+    this.setScore(id, fitScore, breakdown);
+    this.db
+      .prepare(
+        `UPDATE prospects SET qualification_junglegrid_job_id = ?,
+         scoring_junglegrid_job_id = ?, updated_at = ? WHERE id = ?`,
+      )
+      .run(junglegridJobId, junglegridJobId, now(), id);
+  }
+
   saveResearch(
     prospectId: string,
     input: Omit<ResearchNote, "id" | "prospectId" | "createdAt" | "updatedAt">,
@@ -390,13 +493,15 @@ export class OutreachRepository {
       this.db
         .prepare(
           `UPDATE research_notes SET summary = ?, personalization_detail = ?,
-           junglegrid_relevance = ?, evidence_urls = ?, updated_at = ? WHERE prospect_id = ?`,
+           junglegrid_relevance = ?, evidence_urls = ?, junglegrid_job_id = ?,
+           updated_at = ? WHERE prospect_id = ?`,
         )
         .run(
           input.summary,
           input.personalizationDetail,
           input.junglegridRelevance,
           JSON.stringify(input.evidenceUrls),
+          input.junglegridJobId ?? null,
           timestamp,
           prospectId,
         );
@@ -405,8 +510,8 @@ export class OutreachRepository {
         .prepare(
           `INSERT INTO research_notes (
             id, prospect_id, summary, personalization_detail, junglegrid_relevance,
-            evidence_urls, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            evidence_urls, junglegrid_job_id, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           randomUUID(),
@@ -415,6 +520,7 @@ export class OutreachRepository {
           input.personalizationDetail,
           input.junglegridRelevance,
           JSON.stringify(input.evidenceUrls),
+          input.junglegridJobId ?? null,
           timestamp,
           timestamp,
         );
@@ -492,7 +598,34 @@ export class OutreachRepository {
         );
     }
     this.setProspectStatus(prospectId, "drafted");
-    return this.getDraftByProspect(prospectId)!;
+    const draft = this.getDraftByProspect(prospectId)!;
+    const emailContact = this.listContactPoints(prospectId).find(
+      (contact) =>
+        contact.type === "email" &&
+        contact.value.toLowerCase() === prospect.email.toLowerCase(),
+    );
+    if (emailContact) {
+      const conversation = this.ensureConversation({
+        prospectId,
+        campaignId: input.campaignId ?? "jungle-grid",
+        contactPointId: emailContact.id,
+        channel: "email",
+      });
+      if (this.listConversationMessages(conversation.id).length === 0) {
+        this.addMessage({
+          conversationId: conversation.id,
+          legacyEmailDraftId: draft.id,
+          direction: "outbound",
+          channel: "email",
+          subject: draft.subject,
+          body: draft.body,
+          status: draft.validationStatus === "send_ready" ? "approval_required" : "blocked",
+          validationStatus: draft.validationStatus,
+          junglegridJobId: input.junglegridJobId ?? null,
+        });
+      }
+    }
+    return draft;
   }
 
   listDrafts(): Array<EmailDraft & { prospect: Prospect }> {
@@ -1080,6 +1213,27 @@ export class OutreachRepository {
     return row.count;
   }
 
+  countSentMessagesSince(isoDate: string): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS count FROM messages
+         WHERE status = 'sent' AND sent_at >= ?`,
+      )
+      .get(isoDate) as { count: number };
+    return row.count;
+  }
+
+  countSentMessagesForContactSince(contactPointId: string, isoDate: string): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS count FROM messages m
+         JOIN conversations c ON c.id = m.conversation_id
+         WHERE m.status = 'sent' AND c.contact_point_id = ? AND m.sent_at >= ?`,
+      )
+      .get(contactPointId, isoDate) as { count: number };
+    return row.count;
+  }
+
   pruneExpiredData(retentionDays: number): {
     runsDeleted: number;
     prospectsDeleted: number;
@@ -1110,6 +1264,419 @@ export class OutreachRepository {
       };
     });
     return transaction();
+  }
+
+  addContactPoint(
+    prospectId: string,
+    input: {
+      type: ContactPointType;
+      value: string;
+      sourceUrl: string;
+      publiclyListed?: boolean;
+      authorized?: boolean;
+      confidence?: number;
+    },
+  ): ContactPoint {
+    const normalized = input.value.trim().toLowerCase();
+    const timestamp = now();
+    this.db
+      .prepare(
+        `INSERT INTO contact_points (
+          id, prospect_id, type, value, normalized_value, source_url, publicly_listed,
+          authorized, confidence, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+        ON CONFLICT(prospect_id, type, normalized_value) DO UPDATE SET
+          source_url = excluded.source_url,
+          publicly_listed = excluded.publicly_listed,
+          authorized = excluded.authorized,
+          confidence = excluded.confidence,
+          updated_at = excluded.updated_at`,
+      )
+      .run(
+        randomUUID(),
+        prospectId,
+        input.type,
+        input.value.trim(),
+        normalized,
+        input.sourceUrl,
+        input.publiclyListed === false ? 0 : 1,
+        input.authorized ? 1 : 0,
+        input.confidence ?? 0.5,
+        timestamp,
+        timestamp,
+      );
+    const row = this.db
+      .prepare(
+        "SELECT * FROM contact_points WHERE prospect_id = ? AND type = ? AND normalized_value = ?",
+      )
+      .get(prospectId, input.type, normalized) as Record<string, unknown>;
+    return mapContactPoint(row);
+  }
+
+  listContactPoints(prospectId: string): ContactPoint[] {
+    return (
+      this.db
+        .prepare("SELECT * FROM contact_points WHERE prospect_id = ? ORDER BY confidence DESC")
+        .all(prospectId) as Record<string, unknown>[]
+    ).map(mapContactPoint);
+  }
+
+  getContactPoint(id: string): ContactPoint | null {
+    const row = this.db.prepare("SELECT * FROM contact_points WHERE id = ?").get(id) as
+      | Record<string, unknown>
+      | undefined;
+    return row ? mapContactPoint(row) : null;
+  }
+
+  setContactPointStatus(contactPointId: string, status: ContactPoint["status"]): void {
+    this.db
+      .prepare("UPDATE contact_points SET status = ?, updated_at = ? WHERE id = ?")
+      .run(status, now(), contactPointId);
+  }
+
+  saveProofArtifact(input: {
+    prospectId: string;
+    runId?: string | null;
+    type: string;
+    title: string;
+    content: string;
+    uri?: string | null;
+    evidenceIds: string[];
+    junglegridJobId: string;
+  }): ProofArtifact {
+    const id = randomUUID();
+    const createdAt = now();
+    this.db
+      .prepare(
+        `INSERT INTO proof_artifacts (
+          id, prospect_id, run_id, type, title, content, uri, evidence_ids,
+          junglegrid_job_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        input.prospectId,
+        input.runId ?? null,
+        input.type,
+        input.title,
+        input.content,
+        input.uri ?? null,
+        JSON.stringify(input.evidenceIds),
+        input.junglegridJobId,
+        createdAt,
+      );
+    return { id, ...input, runId: input.runId ?? null, uri: input.uri ?? null, createdAt };
+  }
+
+  listProofArtifacts(prospectId: string): ProofArtifact[] {
+    return (
+      this.db
+        .prepare("SELECT * FROM proof_artifacts WHERE prospect_id = ? ORDER BY created_at DESC")
+        .all(prospectId) as Record<string, unknown>[]
+    ).map((row) => ({
+      id: String(row.id),
+      prospectId: String(row.prospect_id),
+      runId: row.run_id ? String(row.run_id) : null,
+      type: String(row.type),
+      title: String(row.title),
+      content: String(row.content),
+      uri: row.uri ? String(row.uri) : null,
+      evidenceIds: parseJson<string[]>(row.evidence_ids, []),
+      junglegridJobId: String(row.junglegrid_job_id),
+      createdAt: String(row.created_at),
+    }));
+  }
+
+  ensureConversation(input: {
+    prospectId: string;
+    campaignId: string;
+    contactPointId: string;
+    channel: ContactPointType;
+  }): Conversation {
+    const existing = this.db
+      .prepare(
+        `SELECT * FROM conversations WHERE prospect_id = ? AND campaign_id = ?
+         AND contact_point_id = ? ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get(input.prospectId, input.campaignId, input.contactPointId) as
+      | Record<string, unknown>
+      | undefined;
+    if (existing) return mapConversation(existing);
+    const id = randomUUID();
+    const timestamp = now();
+    this.db
+      .prepare(
+        `INSERT INTO conversations (
+          id, prospect_id, campaign_id, contact_point_id, channel, status,
+          opportunity_state, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 'draft', 'qualified', ?, ?)`,
+      )
+      .run(
+        id,
+        input.prospectId,
+        input.campaignId,
+        input.contactPointId,
+        input.channel,
+        timestamp,
+        timestamp,
+      );
+    return this.getConversation(id)!;
+  }
+
+  getConversation(id: string): Conversation | null {
+    const row = this.db.prepare("SELECT * FROM conversations WHERE id = ?").get(id) as
+      | Record<string, unknown>
+      | undefined;
+    return row ? mapConversation(row) : null;
+  }
+
+  listConversations(prospectId?: string): Conversation[] {
+    const rows = prospectId
+      ? (this.db
+          .prepare("SELECT * FROM conversations WHERE prospect_id = ? ORDER BY updated_at DESC")
+          .all(prospectId) as Record<string, unknown>[])
+      : (this.db
+          .prepare("SELECT * FROM conversations ORDER BY updated_at DESC")
+          .all() as Record<string, unknown>[]);
+    return rows.map(mapConversation);
+  }
+
+  listDueConversations(through = new Date().toISOString(), limit = 25): Conversation[] {
+    const boundedLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
+    return (
+      this.db
+        .prepare(
+          `SELECT * FROM conversations
+           WHERE follow_up_at IS NOT NULL
+             AND follow_up_at <= ?
+             AND status IN ('active', 'waiting')
+             AND opted_out_at IS NULL
+           ORDER BY follow_up_at ASC
+           LIMIT ?`,
+        )
+        .all(through, boundedLimit) as Record<string, unknown>[]
+    ).map(mapConversation);
+  }
+
+  listConversationMessages(conversationId: string): Message[] {
+    return (
+      this.db
+        .prepare("SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC")
+        .all(conversationId) as Record<string, unknown>[]
+    ).map(mapMessage);
+  }
+
+  getMessage(id: string): Message | null {
+    const row = this.db.prepare("SELECT * FROM messages WHERE id = ?").get(id) as
+      | Record<string, unknown>
+      | undefined;
+    return row ? mapMessage(row) : null;
+  }
+
+  updateConversationIntelligence(
+    conversationId: string,
+    input: {
+      summary: string;
+      openQuestions?: string[];
+      commitments?: string[];
+      objections?: string[];
+      followUpAt?: string | null;
+      opportunityState?: Conversation["opportunityState"];
+    },
+  ): Conversation {
+    const current = this.getConversation(conversationId);
+    if (!current) throw new Error("Conversation not found.");
+    this.db
+      .prepare(
+        `UPDATE conversations SET summary = ?, open_questions = ?, commitments = ?,
+         objections = ?, follow_up_at = ?, opportunity_state = ?, updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(
+        input.summary,
+        JSON.stringify(input.openQuestions ?? current.openQuestions),
+        JSON.stringify(input.commitments ?? current.commitments),
+        JSON.stringify(input.objections ?? current.objections),
+        input.followUpAt === undefined ? current.followUpAt : input.followUpAt,
+        input.opportunityState ?? current.opportunityState,
+        now(),
+        conversationId,
+      );
+    return this.getConversation(conversationId)!;
+  }
+
+  addMessage(input: {
+    conversationId: string;
+    direction: Message["direction"];
+    channel: ContactPointType;
+    body: string;
+    subject?: string | null;
+    status: Message["status"];
+    classification?: string | null;
+    validationStatus: Message["validationStatus"];
+    junglegridJobId?: string | null;
+    policyDecisionId?: string | null;
+    externalMessageId?: string | null;
+    legacyEmailDraftId?: string | null;
+  }): Message {
+    const id = randomUUID();
+    const createdAt = now();
+    this.db
+      .prepare(
+        `INSERT INTO messages (
+          id, conversation_id, legacy_email_draft_id, direction, channel, subject,
+          body, status, classification, validation_status, junglegrid_job_id,
+          policy_decision_id, external_message_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        input.conversationId,
+        input.legacyEmailDraftId ?? null,
+        input.direction,
+        input.channel,
+        input.subject ?? null,
+        input.body,
+        input.status,
+        input.classification ?? null,
+        input.validationStatus,
+        input.junglegridJobId ?? null,
+        input.policyDecisionId ?? null,
+        input.externalMessageId ?? null,
+        createdAt,
+      );
+    this.db
+      .prepare(
+        `UPDATE conversations SET status = ?, updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(
+        input.direction === "inbound" ? "active" : "waiting",
+        createdAt,
+        input.conversationId,
+      );
+    return mapMessage(
+      this.db.prepare("SELECT * FROM messages WHERE id = ?").get(id) as Record<string, unknown>,
+    );
+  }
+
+  updateMessageStatus(
+    messageId: string,
+    status: Message["status"],
+    externalMessageId?: string | null,
+  ): Message {
+    this.db
+      .prepare(
+        `UPDATE messages SET status = ?, external_message_id = COALESCE(?, external_message_id),
+         sent_at = CASE WHEN ? = 'sent' THEN ? ELSE sent_at END WHERE id = ?`,
+      )
+      .run(status, externalMessageId ?? null, status, now(), messageId);
+    const row = this.db.prepare("SELECT * FROM messages WHERE id = ?").get(messageId) as
+      | Record<string, unknown>
+      | undefined;
+    if (!row) throw new Error("Message not found.");
+    return mapMessage(row);
+  }
+
+  recordPolicyDecision(input: {
+    conversationId: string;
+    mode: string;
+    decision: string;
+    reasons: string[];
+    junglegridJobId?: string | null;
+  }): string {
+    const id = randomUUID();
+    this.db
+      .prepare(
+        `INSERT INTO policy_decisions (
+          id, conversation_id, mode, decision, reasons, junglegrid_job_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        input.conversationId,
+        input.mode,
+        input.decision,
+        JSON.stringify(input.reasons),
+        input.junglegridJobId ?? null,
+        now(),
+      );
+    return id;
+  }
+
+  createConversationJob(conversationId: string, stage = "conversation_turn"): string {
+    const id = randomUUID();
+    const timestamp = now();
+    this.db
+      .prepare(
+        `INSERT INTO conversation_jobs (
+          id, conversation_id, stage, status, created_at, updated_at
+        ) VALUES (?, ?, ?, 'preparing', ?, ?)`,
+      )
+      .run(id, conversationId, stage, timestamp, timestamp);
+    return id;
+  }
+
+  updateConversationJob(
+    id: string,
+    input: {
+      junglegridJobId?: string | null;
+      status: string;
+      failureReason?: string | null;
+    },
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE conversation_jobs SET junglegrid_job_id = COALESCE(?, junglegrid_job_id),
+         status = ?, failure_reason = ?, updated_at = ?,
+         completed_at = CASE WHEN ? IN ('completed', 'failed', 'cancelled')
+           THEN COALESCE(completed_at, ?) ELSE completed_at END
+         WHERE id = ?`,
+      )
+      .run(
+        input.junglegridJobId ?? null,
+        input.status,
+        input.failureReason ?? null,
+        now(),
+        input.status,
+        now(),
+        id,
+      );
+  }
+
+  listConversationJobs(conversationId: string): Array<Record<string, unknown>> {
+    return this.db
+      .prepare(
+        `SELECT * FROM conversation_jobs WHERE conversation_id = ?
+         ORDER BY created_at DESC`,
+      )
+      .all(conversationId) as Array<Record<string, unknown>>;
+  }
+
+  optOutConversation(conversationId: string, reason = "recipient_opt_out"): Conversation {
+    const conversation = this.getConversation(conversationId);
+    if (!conversation) throw new Error("Conversation not found.");
+    const contact = this.db
+      .prepare("SELECT * FROM contact_points WHERE id = ?")
+      .get(conversation.contactPointId) as Record<string, unknown>;
+    const timestamp = now();
+    this.db
+      .prepare(
+        `UPDATE conversations SET status = 'opted_out', opportunity_state = 'lost',
+         opted_out_at = ?, updated_at = ? WHERE id = ?`,
+      )
+      .run(timestamp, timestamp, conversationId);
+    this.setContactPointStatus(conversation.contactPointId, "opted_out");
+    if (contact.type === "email") {
+      const email = String(contact.value);
+      this.addSuppression({
+        email,
+        domain: email.split("@")[1] ?? null,
+        reason,
+        source: "inbound_reply",
+      });
+    }
+    return this.getConversation(conversationId)!;
   }
 
   getSettings(): OutreachSettings {

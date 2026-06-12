@@ -47,9 +47,16 @@ describe("campaign configuration", () => {
   it("loads distinct reusable campaigns from configuration files", () => {
     const campaigns = listCampaignConfigurations();
     expect(campaigns.map((campaign) => campaign.campaignId)).toEqual(
-      expect.arrayContaining(["jungle-grid", "generic-saas-observability"]),
+      expect.arrayContaining([
+        "jungle-grid",
+        "generic-saas-observability",
+        "local-services-booking",
+      ]),
     );
     expect(loadCampaignConfiguration("generic-saas-observability").offer.name).toBe("Trace Harbor");
+    expect(loadCampaignConfiguration("local-services-booking").idealCustomerProfile.categories).toContain(
+      "other",
+    );
   });
 
   it("submits either campaign through the same Jungle Grid backend contract", async () => {

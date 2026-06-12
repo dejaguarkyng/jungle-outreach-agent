@@ -235,6 +235,20 @@ async function runJungleGridOutreach(
         artifacts,
       });
       const bundle = await provider.downloadArtifactBundle(jobId);
+      if (bundle && typeof bundle === "object") {
+        if (bundle.run_summary && typeof bundle.run_summary === "object") {
+          bundle.run_summary.junglegrid_job_id = jobId;
+        }
+        for (const note of Array.isArray(bundle.research_notes) ? bundle.research_notes : []) {
+          note.junglegrid_job_id = jobId;
+        }
+        for (const score of Array.isArray(bundle.scored_prospects) ? bundle.scored_prospects : []) {
+          score.junglegrid_job_id = jobId;
+          for (const proof of score.proof_artifacts ?? []) {
+            proof.junglegrid_job_id = jobId;
+          }
+        }
+      }
       repository.updateRun(runId, { phase: "validating" });
       execution = repository.updateJungleGridExecution(execution.id, {
         executionPhase: "semantic_validation",

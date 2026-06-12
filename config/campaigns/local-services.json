@@ -1,0 +1,57 @@
+{
+  "schemaVersion": "1.0",
+  "workspaceId": "example-workspace",
+  "campaignId": "local-services-booking",
+  "name": "Local services booking",
+  "businessInformation": {
+    "description": "Calendar Lane helps local service businesses convert website visitors into bookings.",
+    "website": "https://calendarlane.example"
+  },
+  "offer": {
+    "name": "Calendar Lane",
+    "description": "Online booking and missed-call follow-up for local service businesses.",
+    "url": "https://calendarlane.example",
+    "senderName": "Alex",
+    "signature": "Alex"
+  },
+  "customerProblems": ["missed calls", "manual appointment scheduling", "low website conversion"],
+  "idealCustomerProfile": {
+    "description": "Independent clinics, salons, repair shops, and home-service businesses.",
+    "categories": ["other", "saas"],
+    "targetTerms": ["clinic", "salon", "repair", "plumbing", "electrician", "appointment"],
+    "workloadTerms": ["booking", "schedule", "appointment", "contact form", "phone"],
+    "executionTerms": ["availability", "confirmation", "reminder", "follow up"],
+    "painTerms": ["missed call", "no show", "manual", "after hours"],
+    "exclusionTerms": ["directory", "marketplace", "franchise corporate"]
+  },
+  "qualification": {
+    "requireTargetSignal": true,
+    "requireWorkloadSignal": true,
+    "requireExecutionSignal": false,
+    "requirePainSignal": false,
+    "maximumActivityAgeDays": 365
+  },
+  "messaging": {
+    "positioning": "Calendar Lane adds online booking and missed-call follow-up without replacing the existing phone workflow.",
+    "callToAction": "If reducing missed bookings is a priority, the short overview is",
+    "subjectPrefix": "Booking flow for"
+  },
+  "proofOfValue": {
+    "strategy": "website_audit",
+    "artifactTypes": ["website_audit", "campaign_concept"]
+  },
+  "channels": ["email", "official_contact_form", "business_phone", "booking_link"],
+  "conversionGoal": "booking workflow review",
+  "autonomy": {
+    "mode": "confirmation_required",
+    "maximumFollowUps": 1,
+    "minimumScore": 70,
+    "escalationTerms": ["complaint", "legal", "pricing", "contract"]
+  },
+  "execution": {
+    "researchModel": "qwen2.5:3b",
+    "scoringModel": "qwen2.5:3b",
+    "draftingModel": "qwen2.5:3b",
+    "validationModel": "qwen2.5:3b"
+  }
+}

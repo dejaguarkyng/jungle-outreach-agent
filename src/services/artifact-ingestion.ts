@@ -105,7 +105,7 @@ export function validateArtifactBundle(
       throw new Error(`Draft ${draft.prospect_id} is missing prospect, research, or score evidence.`);
     }
     if (
-      prospect.email.toLowerCase() !== draft.email.toLowerCase() ||
+      prospect.email?.toLowerCase() !== draft.email.toLowerCase() ||
       prospect.email_source_url !== draft.email_source_url ||
       score.fit_score !== draft.fit_score
     ) {
@@ -144,31 +144,26 @@ export function ingestArtifactBundle(
   });
   const notes = new Map(bundle.research_notes.map((row) => [row.prospect_id, row]));
   const scores = new Map(bundle.scored_prospects.map((row) => [row.prospect_id, row]));
-  const prospects = new Map(bundle.prospects.map((row) => [row.prospect_id, row]));
+  const persistedProspects = new Map<string, ReturnType<OutreachRepository["getProspect"]>>();
   let drafted = 0;
 
-  for (const artifactDraft of bundle.email_drafts) {
-    const source = prospects.get(artifactDraft.prospect_id)!;
-    const note = notes.get(artifactDraft.prospect_id)!;
-    const score = scores.get(artifactDraft.prospect_id)!;
-    const domain = artifactDraft.email.split("@")[1];
-    if (
-      repository.isBlocked(artifactDraft.email, domain) ||
-      repository.isSuppressed(artifactDraft.email, domain)
-    ) {
-      continue;
-    }
+  for (const source of bundle.prospects) {
+    const note = notes.get(source.prospect_id);
+    const score = scores.get(source.prospect_id);
+    if (!note || !score) continue;
+    const primaryContact = source.contact_points?.[0];
     const { prospect } = repository.upsertProspect({
-      name: artifactDraft.name,
-      email: artifactDraft.email,
-      emailSourceUrl: artifactDraft.email_source_url,
-      emailSourceType: source.email_source_type,
+      name: source.name,
+      email: source.email,
+      emailSourceUrl:
+        source.email_source_url ?? primaryContact?.source_url ?? source.project_url,
+      emailSourceType: source.email_source_type ?? "official_website",
       githubUrl: source.project_url.includes("github.com") ? source.project_url : null,
       websiteUrl: source.project_url.includes("github.com") ? null : source.project_url,
-      project: artifactDraft.project,
-      projectKey: artifactDraft.project.toLowerCase(),
+      project: source.project,
+      projectKey: source.project_key ?? source.project.toLowerCase(),
       projectDescription: source.project_description,
-      category: artifactDraft.category,
+      category: source.category,
       confidenceScore: note.evidence_strength,
     });
     repository.saveResearch(prospect.id, {
@@ -176,9 +171,50 @@ export function ingestArtifactBundle(
       personalizationDetail: note.personalization_detail,
       junglegridRelevance: note.junglegrid_relevance,
       evidenceUrls: note.evidence_urls,
+      junglegridJobId:
+        note.junglegrid_job_id ?? bundle.run_summary.junglegrid_job_id ?? null,
     });
-    repository.setScore(prospect.id, score.fit_score, score.score_breakdown);
+    repository.setScoreWithExecution(
+      prospect.id,
+      score.fit_score,
+      score.score_breakdown,
+      score.junglegrid_job_id ?? bundle.run_summary.junglegrid_job_id ?? null,
+    );
     repository.setProspectStatus(prospect.id, "approved");
+    for (const contact of source.contact_points ?? []) {
+      repository.addContactPoint(prospect.id, {
+        type: contact.type,
+        value: contact.value,
+        sourceUrl: contact.source_url,
+        publiclyListed: contact.publicly_listed,
+        authorized: contact.authorized,
+        confidence: contact.confidence,
+      });
+    }
+    for (const proof of score.proof_artifacts ?? []) {
+      repository.saveProofArtifact({
+        prospectId: prospect.id,
+        type: proof.type,
+        title: proof.title,
+        content: proof.content,
+        uri: proof.uri ?? null,
+        evidenceIds: proof.evidence_ids,
+        junglegridJobId: proof.junglegrid_job_id,
+      });
+    }
+    persistedProspects.set(source.prospect_id, prospect);
+  }
+
+  for (const artifactDraft of bundle.email_drafts) {
+    const prospect = persistedProspects.get(artifactDraft.prospect_id);
+    if (!prospect) continue;
+    const domain = artifactDraft.email.split("@")[1];
+    if (
+      repository.isBlocked(artifactDraft.email, domain) ||
+      repository.isSuppressed(artifactDraft.email, domain)
+    ) {
+      continue;
+    }
     repository.saveDraft(prospect.id, {
       subject: artifactDraft.subject,
       body: artifactDraft.body,
@@ -188,6 +224,8 @@ export function ingestArtifactBundle(
       personalizationClaims: artifactDraft.personalization_claims,
       validationStatus: artifactDraft.validation_status,
       validationErrors: artifactDraft.validation_errors,
+      campaignId: bundle.run_summary.campaign_id ?? "jungle-grid",
+      junglegridJobId: bundle.run_summary.junglegrid_job_id ?? null,
     });
     drafted += 1;
   }

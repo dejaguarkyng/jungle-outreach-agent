@@ -32,6 +32,13 @@ export async function GET(
     prospect,
     research: repository.getResearch(id),
     draft: repository.getDraftByProspect(id),
+    contactPoints: repository.listContactPoints(id),
+    proofArtifacts: repository.listProofArtifacts(id),
+    conversations: repository.listConversations(id).map((conversation) => ({
+      ...conversation,
+      messages: repository.listConversationMessages(conversation.id),
+      jobs: repository.listConversationJobs(conversation.id),
+    })),
     contactHistory: repository
       .listDrafts()
       .filter((item) => item.prospect.email === prospect.email || item.prospect.domain === prospect.domain)

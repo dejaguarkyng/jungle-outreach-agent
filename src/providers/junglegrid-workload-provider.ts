@@ -1,8 +1,10 @@
 import { getEnv, type AppEnv } from "@/src/config/env";
 import {
   requiredArtifactNames,
+  conversationTurnResultSchema,
   type ArtifactBundle,
   type CampaignConfiguration,
+  type ConversationTurnResult,
   type OutreachMode,
 } from "@/packages/shared/src";
 
@@ -50,6 +52,18 @@ export type JungleGridJobEvent = {
   phase?: string;
   message?: string;
   metadata?: Record<string, unknown>;
+};
+
+export type ConversationTurnInput = {
+  conversation_id: string;
+  channel: string;
+  inbound_body: string;
+  trigger?: "inbound_reply" | "scheduled_follow_up";
+  prospect: Record<string, unknown>;
+  contact_point: Record<string, unknown>;
+  evidence: Record<string, unknown>[];
+  proof_artifacts: Record<string, unknown>[];
+  history: Record<string, unknown>[];
 };
 
 type WorkerExclusions = {
@@ -136,6 +150,28 @@ export class JungleGridWorkloadProvider {
   ): Promise<JungleGridJob> {
     const payload = this.buildJobPayload(mode, target, category, exclusions, campaign);
     return this.request<JungleGridJob>("POST", "/v1/jobs", payload);
+  }
+
+  async estimateConversationTurn(
+    input: ConversationTurnInput,
+    campaign: CampaignConfiguration,
+  ): Promise<unknown> {
+    return this.request(
+      "POST",
+      "/v1/jobs/estimate",
+      this.buildConversationJobPayload(input, campaign),
+    );
+  }
+
+  async submitConversationTurn(
+    input: ConversationTurnInput,
+    campaign: CampaignConfiguration,
+  ): Promise<JungleGridJob> {
+    return this.request<JungleGridJob>(
+      "POST",
+      "/v1/jobs",
+      this.buildConversationJobPayload(input, campaign),
+    );
   }
 
   async getJob(jobId: string): Promise<JungleGridJob> {
@@ -228,6 +264,19 @@ export class JungleGridWorkloadProvider {
       run_summary: downloaded["run_summary.json"],
       validation_report: downloaded["validation_report.json"],
     } as ArtifactBundle;
+  }
+
+  async downloadConversationTurnResult(jobId: string): Promise<ConversationTurnResult> {
+    const artifacts = await this.listArtifacts(jobId);
+    const artifact = artifacts.find(
+      (item) => item.filename.split("/").pop() === "conversation_result.json",
+    );
+    if (!artifact) {
+      throw new Error("Jungle Grid conversation job is missing conversation_result.json.");
+    }
+    return conversationTurnResultSchema.parse(
+      await this.downloadArtifact(jobId, artifact),
+    );
   }
 
   private buildJobPayload(
@@ -330,6 +379,59 @@ export class JungleGridWorkloadProvider {
         job_contract_schema_version: jobContract.schema_version,
         pipeline_stages: jobContract.pipeline_stages,
         safety: "draft-only",
+      },
+    };
+  }
+
+  private buildConversationJobPayload(
+    input: ConversationTurnInput,
+    campaign: CampaignConfiguration,
+  ) {
+    return {
+      name: `openline-conversation-turn-${Date.now()}`,
+      workload_type: this.env.JUNGLEGRID_DEFAULT_WORKLOAD_TYPE,
+      image: this.env.JUNGLEGRID_DEFAULT_IMAGE,
+      ...(this.env.JUNGLEGRID_REGISTRY_CREDENTIAL_ID
+        ? { registry_credential_id: this.env.JUNGLEGRID_REGISTRY_CREDENTIAL_ID }
+        : {}),
+      command: [
+        "python",
+        "/app/workers/outreach/outreach_worker.py",
+        "--job",
+        "conversation-turn-qwen",
+        "--output",
+        "/workspace/artifacts",
+      ],
+      requires_gpu: true,
+      gpu_count: 1,
+      model_size_gb: 3,
+      optimize_for: this.env.JUNGLEGRID_OPTIMIZE_FOR,
+      environment: {
+        OLLAMA_MODEL: campaign.execution.draftingModel,
+        OLLAMA_HOST: this.env.OLLAMA_HOST,
+        USE_LOCAL_LLM: "true",
+        LLM_FALLBACK_MODE: "disabled",
+        OUTREACH_CAMPAIGN_CONFIG: JSON.stringify(campaign),
+        OUTREACH_EXECUTION_BACKEND: "jungle_grid",
+        OPENLINE_CONVERSATION_INPUT: JSON.stringify(input),
+      },
+      expected_artifacts: ["/workspace/artifacts/conversation_result.json"],
+      metadata: {
+        application: "openline",
+        execution_backend: "jungle_grid",
+        schema_version: "1.0",
+        workspace_id: campaign.workspaceId,
+        campaign_id: campaign.campaignId,
+        pipeline_stage: "conversation_turn",
+        pipeline_stages: [
+          "reply_classification",
+          "conversation_summarization",
+          "next_action_selection",
+          "response_generation",
+          "semantic_validation",
+        ],
+        workload_models: campaign.execution,
+        safety: "policy-controlled",
       },
     };
   }

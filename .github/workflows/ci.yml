@@ -26,5 +26,4 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run test:python
-      - run: python -m pytest -q
       - run: npm run build
