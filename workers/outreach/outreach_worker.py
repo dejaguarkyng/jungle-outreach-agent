@@ -416,6 +416,32 @@ def is_clean_evidence_text(value: str) -> bool:
     return bool(cleaned and len(cleaned) >= 20 and not contamination_reasons(value) and not contamination_reasons(cleaned))
 
 
+def is_code_or_configuration_fragment(value: str) -> bool:
+    return bool(
+        re.search(
+            r"(?:\b(?:const|let|var|class|function|import|from|new)\s+[a-z_$]"
+            r"|[{}[\]]{2,}|=>|;\s*$|https?://[^\s'\"]+"
+            r"|\b(?:accessToken|apiKey|clientId|clientSecret|host)\s*:)",
+            value or "",
+            re.I,
+        )
+    )
+
+
+def is_operational_pain_statement(value: str) -> bool:
+    if is_code_or_configuration_fragment(value):
+        return False
+    return bool(
+        re.search(
+            r"\b(?:incident|failure|failed|regression|outage|timeout|latency|slow|"
+            r"bottleneck|unreliable|debug(?:ging)?|cost(?:ly)?|capacity|memory pressure|"
+            r"scal(?:e|ing|ability)|deployment (?:failure|issue|problem)|struggl\w*)\b",
+            value or "",
+            re.I,
+        )
+    )
+
+
 def unique_preserve_order(values: list[str]) -> list[str]:
     return list(dict.fromkeys([value for value in values if value]))
 
@@ -480,6 +506,8 @@ def extract_evidence_points(text: str) -> list[str]:
             continue
         for chunk in re.split(r",|;|\band\b", sentence):
             lowered = chunk.lower().strip()
+            if is_code_or_configuration_fragment(chunk):
+                continue
             if NON_AI_AGENT_RE.search(lowered):
                 continue
             if GENERIC_PACKAGE_RE.search(lowered) and not workload_re.search(lowered):
@@ -505,6 +533,8 @@ def extract_pain_signals(text: str) -> list[str]:
     execution_re = campaign_regex("executionTerms")
     for sentence in split_sentences(text):
         if not is_clean_evidence_text(sentence):
+            continue
+        if not is_operational_pain_statement(sentence):
             continue
         if not pain_re.search(sentence):
             continue
@@ -606,6 +636,8 @@ def canonical_entity_graph(prospect: dict[str, Any], evidence: list[dict[str, An
     project_url = prospect.get("project_url", "")
     project_domain = domain_from_url(project_url)
     owner = prospect.get("owner_login", "")
+    owner_is_user = prospect.get("owner_type", "").lower() == "user"
+    official_project_domain = project_domain if project_domain and project_domain != "github.com" else ""
     repo = parse_github_repo(project_url)
     project_id = prospect.get("entity_id") or canonical_id("project", project)
     company_id = canonical_id("company", owner or email_domain or project)
@@ -613,7 +645,7 @@ def canonical_entity_graph(prospect: dict[str, Any], evidence: list[dict[str, An
     primary_contact = next(iter(prospect.get("contact_points", [])), {})
     contact_value = email or str(primary_contact.get("value", ""))
     contact_id = canonical_id("contact", contact_value)
-    domain_id = canonical_id("domain", email_domain or project_domain or project)
+    domain_id = canonical_id("domain", email_domain or official_project_domain or project)
     entities: list[dict[str, Any]] = [
         {
             "entity_id": project_id,
@@ -629,7 +661,7 @@ def canonical_entity_graph(prospect: dict[str, Any], evidence: list[dict[str, An
             "canonical_name": prospect.get("name", ""),
             "aliases": unique_preserve_order([prospect.get("name", ""), owner if prospect.get("owner_type", "").lower() == "user" else ""]),
             "source_specific_ids": {"email": email},
-            "confidence": 0.75 if prospect.get("owner_type", "").lower() == "user" else 0.55,
+            "confidence": 0.75 if owner_is_user else 0.55,
         },
         {
             "entity_id": contact_id,
@@ -644,26 +676,29 @@ def canonical_entity_graph(prospect: dict[str, Any], evidence: list[dict[str, An
         {
             "entity_id": domain_id,
             "entity_type": "domain",
-            "canonical_name": email_domain or project_domain,
-            "aliases": unique_preserve_order([email_domain, project_domain]),
+            "canonical_name": email_domain or official_project_domain,
+            "aliases": unique_preserve_order([email_domain, official_project_domain]),
             "source_specific_ids": {},
             "confidence": 0.65,
         },
-        {
-            "entity_id": company_id,
-            "entity_type": "company",
-            "canonical_name": owner or email_domain or project,
-            "aliases": unique_preserve_order([owner, email_domain]),
-            "source_specific_ids": {"owner_login": owner},
-            "confidence": 0.6,
-        },
     ]
+    if not owner_is_user:
+        entities.append(
+            {
+                "entity_id": company_id,
+                "entity_type": "company",
+                "canonical_name": owner or official_project_domain or project,
+                "aliases": unique_preserve_order([owner, official_project_domain]),
+                "source_specific_ids": {"owner_login": owner},
+                "confidence": 0.6,
+            }
+        )
     relationships: list[dict[str, Any]] = [
         {
             "relationship_type": "person_reachable_for_project",
             "from_entity_id": person_id,
             "to_entity_id": project_id,
-            "confidence": 0.85 if prospect.get("owner_type", "").lower() == "user" else 0.6,
+            "confidence": 0.85 if owner_is_user else 0.6,
             "evidence_ids": [item["evidence_id"] for item in evidence if item.get("claim_type") in {"role", "contact"}],
         },
         {
@@ -673,21 +708,27 @@ def canonical_entity_graph(prospect: dict[str, Any], evidence: list[dict[str, An
             "confidence": float((prospect.get("contact_provenance") or {}).get("confidence") or 0.5),
             "evidence_ids": [item["evidence_id"] for item in evidence if item.get("claim_type") == "contact"],
         },
-        {
-            "relationship_type": "project_has_domain",
-            "from_entity_id": project_id,
-            "to_entity_id": domain_id,
-            "confidence": 0.65,
-            "evidence_ids": [],
-        },
-        {
-            "relationship_type": "company_or_owner_controls_project",
-            "from_entity_id": company_id,
-            "to_entity_id": project_id,
-            "confidence": 0.75 if owner and owner.lower() in project.lower() else 0.5,
-            "evidence_ids": [],
-        },
     ]
+    if official_project_domain and official_project_domain == (email_domain or official_project_domain):
+        relationships.append(
+            {
+                "relationship_type": "project_has_domain",
+                "from_entity_id": project_id,
+                "to_entity_id": domain_id,
+                "confidence": 0.65,
+                "evidence_ids": [],
+            }
+        )
+    if not owner_is_user:
+        relationships.append(
+            {
+                "relationship_type": "company_or_owner_controls_project",
+                "from_entity_id": company_id,
+                "to_entity_id": project_id,
+                "confidence": 0.75 if owner and owner.lower() in project.lower() else 0.5,
+                "evidence_ids": [],
+            }
+        )
     if repo:
         repo_id = canonical_id("repository", f"github.com/{repo[0]}/{repo[1]}")
         entities.append(
@@ -1096,6 +1137,39 @@ def extract_likely_site_links(html: str, base_urls: list[str]) -> list[str]:
     return list(dict.fromkeys(links))
 
 
+def github_contact_point_type(url: str) -> str:
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except ValueError:
+        return ""
+    if (parsed.hostname or "").lower() not in {"github.com", "www.github.com"}:
+        return ""
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) == 1 and parts[0].lower() not in {
+        "features",
+        "security",
+        "solutions",
+        "resources",
+        "enterprise",
+        "marketplace",
+        "pricing",
+        "topics",
+        "trending",
+        "collections",
+        "sponsors",
+        "partners",
+        "login",
+        "team",
+        "mcp",
+    }:
+        return "github_profile"
+    if len(parts) == 3 and parts[2].lower() == "discussions":
+        return "github_discussions"
+    if len(parts) == 3 and parts[2].lower() == "issues":
+        return "github_issue"
+    return ""
+
+
 def public_contact_points(html: str, source_url: str) -> list[dict[str, Any]]:
     points: list[dict[str, Any]] = []
     links = [match.group(1).strip() for match in HREF_RE.finditer(html)]
@@ -1113,12 +1187,8 @@ def public_contact_points(html: str, source_url: str) -> list[dict[str, Any]]:
             absolute = raw.split(":", 1)[1]
         elif "wa.me/" in lowered or "whatsapp" in lowered:
             point_type = "whatsapp_business"
-        elif "github.com" in lowered and "/discussions" in lowered:
-            point_type = "github_discussions"
-        elif "github.com" in lowered and "/issues" in lowered:
-            point_type = "github_issue"
-        elif "github.com" in lowered:
-            point_type = "github_profile"
+        elif (github_type := github_contact_point_type(absolute)):
+            point_type = github_type
         elif "linkedin.com/company/" in lowered:
             point_type = "linkedin_company"
         elif "linkedin.com/in/" in lowered:
@@ -2332,23 +2402,44 @@ def score_breakdown(prospect: dict[str, Any], note: dict[str, Any]) -> dict[str,
     )
     evidence_points = note.get("evidence_points", [])
     pain_signals = note.get("pain_signals", [])
+    evidence_items = note.get("evidence", [])
     diagnostics = prospect.get("diagnostics", {})
     contact = int(diagnostics.get("contact_quality", 0))
     updated_days = diagnostics.get("updated_days")
     target_match = bool(campaign_regex("targetTerms").search(text))
     workload_match = bool(campaign_regex("workloadTerms").search(text))
-    agent = 20 if target_match and len(evidence_points) >= 2 else (12 if target_match and evidence_points else 0)
+    workload_evidence = evidence_by_type(
+        evidence_items,
+        "ai_workload" if CAMPAIGN.get("campaignId") == "jungle-grid" else "target_workload",
+    )
+    pain_evidence = evidence_by_type(evidence_items, "infrastructure_pain")
+    activity_evidence = evidence_by_type(evidence_items, "activity")
+    integration_evidence = evidence_by_type(evidence_items, "integration_surface")
+    contact_evidence = evidence_by_type(evidence_items, "contact")
+    agent = (
+        20
+        if target_match and len(workload_evidence) >= 2
+        else (12 if target_match and workload_evidence else 0)
+    )
     workload = (
         20
-        if workload_match and len(evidence_points) >= 2
-        else (12 if workload_match and evidence_points else 0)
+        if workload_match and len(workload_evidence) >= 2
+        else (12 if workload_match and workload_evidence else 0)
     )
-    infrastructure = 20 if pain_signals else 0
-    activity = 15 if updated_days is not None and updated_days <= 30 else (11 if updated_days is not None and updated_days <= 90 else 4)
+    infrastructure = 20 if pain_signals and pain_evidence else 0
+    activity = (
+        15
+        if activity_evidence and updated_days is not None and updated_days <= 30
+        else (
+            11
+            if activity_evidence and updated_days is not None and updated_days <= 90
+            else (4 if activity_evidence else 0)
+        )
+    )
     comprehension = (
         15
-        if len(evidence_points) >= 2 and diagnostics.get("has_execution_surface")
-        else (8 if len(evidence_points) >= 2 else 0)
+        if len(workload_evidence) >= 2 and integration_evidence
+        else (8 if workload_evidence and integration_evidence else 0)
     )
     return {
         "agentMcpRelevance": min(20, agent),
@@ -2356,7 +2447,7 @@ def score_breakdown(prospect: dict[str, Any], note: dict[str, Any]) -> dict[str,
         "infrastructurePain": min(20, infrastructure),
         "openSourceActivity": min(15, activity),
         "jungleGridComprehension": min(15, comprehension),
-        "contactQuality": min(10, contact),
+        "contactQuality": min(10, contact) if contact_evidence else 0,
     }
 
 
@@ -2507,7 +2598,8 @@ def system_prompt() -> str:
     return (
         "You write concise founder-led outreach emails using only the provided evidence and campaign configuration. "
         f"Do not invent facts. Output plain text only. Include exactly one link and it must be {SITE}. "
-        "Keep the email under 140 words. If evidence is insufficient, return SKIP."
+        f"The body must contain {MIN_WORDS}-{MAX_WORDS} words, inclusive. "
+        "Count the greeting and signature as words. If evidence is insufficient, return SKIP."
     )
 
 
@@ -2595,6 +2687,8 @@ def qwen_draft(
             "format": "JSON",
             "fields": ["subject", "body", "personalization_claims"],
             "signature": CAMPAIGN["offer"]["signature"],
+            "body_word_count": {"minimum": MIN_WORDS, "maximum": MAX_WORDS},
+            "required_link": SITE,
         },
     }
     response = request_json(

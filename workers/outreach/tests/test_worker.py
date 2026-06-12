@@ -52,6 +52,41 @@ class WorkerSmokeTest(unittest.TestCase):
             }.issubset(point_types)
         )
 
+    def test_public_contact_points_ignore_github_navigation_and_repository_links(self):
+        html = """
+        <a href="https://github.com/features/copilot">Copilot</a>
+        <a href="https://github.com/solutions/use-case/devops">DevOps</a>
+        <a href="https://github.com/login?return_to=%2Facme%2Fruntime">Sign in</a>
+        <a href="https://github.com/acme/runtime">Repository</a>
+        <a href="https://github.com/acme">Maintainer</a>
+        <a href="https://github.com/acme/runtime/issues">Issues</a>
+        <a href="https://github.com/acme/runtime/discussions">Discussions</a>
+        """
+        points = worker_module.public_contact_points(html, "https://github.com/acme/runtime/issues")
+        self.assertEqual(
+            {(point["type"], point["value"]) for point in points},
+            {
+                ("github_profile", "https://github.com/acme"),
+                ("github_issue", "https://github.com/acme/runtime/issues"),
+                ("github_discussions", "https://github.com/acme/runtime/discussions"),
+            },
+        )
+
+    def test_code_example_is_not_operational_pain_or_execution_evidence(self):
+        campaign = json.loads(
+            (ROOT / "config" / "campaigns" / "generic-saas.json").read_text()
+        )
+        text = (
+            "A JavaScript wrapper for the Jira Cloud REST API. "
+            "TypeScript const client = new Version3Client({ host: "
+            "'https://your-domain.atlassian.net', authentication: { oauth2: "
+            "{ accessToken: 'YOUR ACCESS TOKEN' } } }); Error Handling Errors are categorized."
+        )
+        with patch.object(worker_module, "CAMPAIGN", campaign):
+            self.assertEqual(worker_module.extract_pain_signals(text), [])
+            points = worker_module.extract_evidence_points(text)
+        self.assertFalse(any("accessToken" in point or "Version3Client" in point for point in points))
+
     def test_scheduled_conversation_turn_does_not_require_inbound_body(self):
         payload = {
             "trigger": "scheduled_follow_up",
@@ -959,8 +994,12 @@ restricted_sources:
                     "email_source_url": "https://agentfoundry.dev/contact",
                     "project": "avery/agentfoundry",
                     "project_url": "https://github.com/avery/agentfoundry",
-                    "project_description": "Solo-built agent runtime for long-running jobs.",
-                    "research_text": "We run long-running agent jobs through a background worker queue, keep logs and artifacts, and are working through deployment latency.",
+                    "project_description": "Solo-built agent runtime for long-running LLM inference jobs.",
+                    "research_text": (
+                        "We run long-running LLM inference jobs through a background worker queue, "
+                        "keep detailed execution logs for every job, preserve generated output "
+                        "artifacts, and are working through deployment latency."
+                    ),
                     "owner_login": "avery",
                     "owner_type": "User",
                     "updated_at": now,
