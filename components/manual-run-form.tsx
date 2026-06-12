@@ -17,6 +17,8 @@ import {
   type OutreachRun,
 } from "@/src/domain/schemas";
 
+const terminalRunPhases = new Set(["completed", "failed", "cancelled", "timed_out", "blocked"]);
+
 const schema = z.object({
   targetCount: z.coerce.number().int().min(1).max(100),
   mode: z.enum(outreachModes),
@@ -60,7 +62,7 @@ export function ManualRunForm({
       if (!response.ok) return;
       const payload = await response.json();
       setRun(payload.run);
-      if (["completed", "failed"].includes(payload.run.phase)) window.clearInterval(interval);
+      if (terminalRunPhases.has(payload.run.phase)) window.clearInterval(interval);
     }, 1500);
     return () => window.clearInterval(interval);
   }, [runId]);
@@ -81,6 +83,7 @@ export function ManualRunForm({
       return;
     }
     setRunId(payload.runId);
+    setRun(payload.run ?? null);
     setConfirming(false);
   }
 
@@ -163,7 +166,11 @@ export function ManualRunForm({
         <Card className="p-5">
           <div className="flex items-center justify-between">
             <h2 className="font-semibold">Run progress</h2>
-            {run ? <Badge tone={run.phase === "failed" ? "red" : "green"}>{run.phase.replaceAll("_", " ")}</Badge> : null}
+            {run ? (
+              <Badge tone={["failed", "cancelled", "timed_out", "blocked"].includes(run.phase) ? "red" : "green"}>
+                {run.phase.replaceAll("_", " ")}
+              </Badge>
+            ) : null}
           </div>
           <div className="mt-5 space-y-3">
             {runPhases.slice(1).map((phase) => {

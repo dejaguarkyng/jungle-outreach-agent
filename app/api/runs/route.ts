@@ -40,7 +40,7 @@ export async function POST(request: NextRequest) {
     void runOutreach(options, undefined, run.id).catch(() => {
       // The orchestrator persists errors. The UI polls the run records.
     });
-    return NextResponse.json({ runId: run.id, accepted: true }, { status: 202 });
+    return NextResponse.json({ runId: run.id, run, accepted: true }, { status: 202 });
   } catch (error) {
     return apiError(error);
   }

@@ -4,6 +4,7 @@ import { OutreachRepository } from "@/src/db/repository";
 import { OutreachService } from "@/src/services/outreach-service";
 import {
   resumeActiveJungleGridRuns,
+  normalizeRunPhase,
   runOutreach,
   type JungleGridExecutionProvider,
 } from "@/src/services/run-orchestrator";
@@ -26,6 +27,7 @@ function provider(options: {
       return { job_id: `job-${submissions}`, status: "queued" };
     }),
     waitForCompletion: vi.fn().mockImplementation(async (jobId, onStatus) => {
+      onStatus?.({ job_id: jobId, status: "running", execution_phase: "source_discovery" });
       onStatus?.({ job_id: jobId, status: "running", execution_phase: "prospect_research" });
       const outcome = waits.shift() ?? "completed";
       if (outcome === "timeout") {
@@ -71,6 +73,16 @@ describe("Jungle Grid run orchestration", () => {
     getDatabase();
   });
 
+  it("maps remote source discovery to the visible discovering phase", () => {
+    expect(
+      normalizeRunPhase({
+        job_id: "job-1",
+        status: "running",
+        execution_phase: "source_discovery",
+      }),
+    ).toBe("discovering");
+  });
+
   it("persists a failed attempt, retries through Jungle Grid, and completes", async () => {
     const repository = new OutreachRepository();
     const service = new OutreachService(repository);
@@ -101,6 +113,11 @@ describe("Jungle Grid run orchestration", () => {
     expect(attempts[1].pipelineStage).toBe("semantic_validation");
     expect(attempts[1].logsCursor).toBe("2026-06-12T10:00:00.000Z");
     expect(repository.getRun(result.runId)?.retryCount).toBe(1);
+    expect(
+      repository
+        .getRunDetail(result.runId)
+        ?.events.some((event) => (event as { phase: string }).phase === "source_discovery"),
+    ).toBe(true);
   });
 
   it("resumes a persisted active job without submitting a duplicate", async () => {

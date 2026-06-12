@@ -531,10 +531,11 @@ function normalizeExecutionPhase(job: JungleGridJob): string {
   return phase;
 }
 
-function normalizeRunPhase(
+export function normalizeRunPhase(
   job: JungleGridJob,
 ):
   | "queued"
+  | "discovering"
   | "starting"
   | "running"
   | "researching"
@@ -550,6 +551,7 @@ function normalizeRunPhase(
   if (phase === "cancelled") return "cancelled";
   if (phase === "starting") return "starting";
   if (phase === "running") return "running";
+  if (phase === "source_discovery") return "discovering";
   if (phase === "prospect_research" || phase === "semantic_qualification" || phase === "entity_resolution") {
     return "researching";
   }
