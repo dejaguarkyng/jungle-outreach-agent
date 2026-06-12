@@ -743,6 +743,136 @@ restricted_sources:
             self.assertNotIn("avery@agent-runtime.dev", emails)
             self.assertTrue(any(row["exclusion_rule_triggered"] for row in skipped))
 
+    def test_discover_prioritizes_email_contacts_over_alternate_channels(self):
+        now = worker_module.utc_now()
+
+        def prospect(prospect_id, owner, email, category):
+            contact_points = [
+                {
+                    "type": "email" if email else "github_discussions",
+                    "value": email or f"https://github.com/{owner}/runtime/discussions",
+                    "source_url": f"https://github.com/{owner}/runtime",
+                    "publicly_listed": True,
+                    "authorized": True,
+                    "confidence": 0.9,
+                }
+            ]
+            return worker_module.normalize_prospect(
+                {
+                    "prospect_id": prospect_id,
+                    "name": f"{owner} maintainer",
+                    "email": email,
+                    "email_source_url": f"https://github.com/{owner}/runtime",
+                    "email_source_type": "github_profile",
+                    "contact_points": contact_points,
+                    "project": f"{owner}/runtime",
+                    "project_url": f"https://github.com/{owner}/runtime",
+                    "project_description": "AI agent runtime for long-running inference jobs.",
+                    "research_text": (
+                        "Maintainer-built AI agent runtime executes long-running inference worker "
+                        "jobs with queues, retries, deployment logs, and generated artifacts."
+                    ),
+                    "category": category,
+                    "owner_login": owner,
+                    "owner_type": "User",
+                    "updated_at": now,
+                }
+            )
+
+        seeded = [
+            prospect("alternate-1", "alternateone", "", "agent_compute"),
+            prospect("alternate-2", "alternatetwo", "", "mcp"),
+            prospect("email-1", "emailone", "founder@emailone.dev", "agent_compute"),
+            prospect("email-2", "emailtwo", "maintainer@emailtwo.dev", "mcp"),
+        ]
+        empty_memory = {
+            "emails": set(),
+            "owners": set(),
+            "repos": set(),
+            "domains": set(),
+            "names": set(),
+        }
+        with (
+            patch.object(worker_module, "load_seed", return_value=seeded),
+            patch.object(worker_module, "load_memory", return_value=empty_memory),
+            patch.object(worker_module, "persist_memory"),
+        ):
+            prospects, skipped, _signals = worker_module.discover(2, Path("unused"), None)
+
+        self.assertEqual(
+            {item["prospect_id"] for item in prospects},
+            {"email-1", "email-2"},
+        )
+        alternate = {
+            item["prospect_id"]: item["exclusion_rule_triggered"] for item in skipped
+        }
+        self.assertEqual(alternate["alternate-1"], "alternate_channel_only")
+        self.assertEqual(alternate["alternate-2"], "alternate_channel_only")
+
+    def test_discover_expands_search_when_seed_pool_has_no_emails(self):
+        now = worker_module.utc_now()
+
+        def prospect(prospect_id, owner, email):
+            return worker_module.normalize_prospect(
+                {
+                    "prospect_id": prospect_id,
+                    "name": f"{owner} maintainer",
+                    "email": email,
+                    "email_source_url": f"https://github.com/{owner}/runtime",
+                    "email_source_type": "github_profile",
+                    "contact_points": [
+                        {
+                            "type": "email" if email else "github_discussions",
+                            "value": email or f"https://github.com/{owner}/runtime/discussions",
+                            "source_url": f"https://github.com/{owner}/runtime",
+                            "publicly_listed": True,
+                            "authorized": True,
+                            "confidence": 0.9,
+                        }
+                    ],
+                    "project": f"{owner}/runtime",
+                    "project_url": f"https://github.com/{owner}/runtime",
+                    "project_description": "AI agent runtime for long-running inference jobs.",
+                    "research_text": (
+                        "Maintainer-built AI agent runtime executes long-running inference worker "
+                        "jobs with queues, retries, deployment logs, and generated artifacts."
+                    ),
+                    "category": "agent_compute",
+                    "owner_login": owner,
+                    "owner_type": "User",
+                    "updated_at": now,
+                }
+            )
+
+        seeded = [
+            prospect("alternate-1", "alternateone", ""),
+            prospect("alternate-2", "alternatetwo", ""),
+        ]
+        discovered = [
+            prospect("email-1", "emailone", "founder@emailone.dev"),
+            prospect("email-2", "emailtwo", "maintainer@emailtwo.dev"),
+        ]
+        empty_memory = {
+            "emails": set(),
+            "owners": set(),
+            "repos": set(),
+            "domains": set(),
+            "names": set(),
+        }
+        with (
+            patch.object(worker_module, "load_seed", return_value=seeded),
+            patch.object(worker_module, "load_memory", return_value=empty_memory),
+            patch.object(worker_module, "discover_from_github", return_value=discovered) as github,
+            patch.object(worker_module, "persist_memory"),
+        ):
+            prospects, _skipped, _signals = worker_module.discover(2, Path("unused"), None)
+
+        github.assert_called_once()
+        self.assertEqual(
+            {item["prospect_id"] for item in prospects},
+            {"email-1", "email-2"},
+        )
+
     def test_website_contacts_ignores_remote_disconnects(self):
         with patch.object(
             worker_module,

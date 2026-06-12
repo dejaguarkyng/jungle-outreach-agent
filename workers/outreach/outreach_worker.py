@@ -2111,25 +2111,25 @@ def discover(
     prospects = load_seed(input_path)
     if category:
         prospects = [prospect for prospect in prospects if prospect["category"] == category]
+    contactable_count = sum(bool(prospect.get("email")) for prospect in prospects)
     adapter_signals: list[dict[str, Any]] = []
     seen_adapter_projects: set[str] = {prospect["project"].strip().lower() for prospect in prospects}
-    if registry and len(prospects) < target:
+    if registry and contactable_count < target:
         adapter_prospects, adapter_signals = discover_from_adapters(
             registry,
-            max(target * 2, target - len(prospects)),
+            max(target * 2, target - contactable_count),
             category,
             seen_adapter_projects,
         )
         prospects.extend(adapter_prospects)
-    if len(prospects) < target:
-        prospects.extend(discover_from_github(max(target * 3, target - len(prospects)), category))
-    unique: dict[str, dict[str, Any]] = {}
+        contactable_count += sum(bool(prospect.get("email")) for prospect in adapter_prospects)
+    if contactable_count < target:
+        prospects.extend(
+            discover_from_github(max(target, target - contactable_count), category)
+        )
+    candidates: list[tuple[dict[str, Any], dict[str, Any], str, str, str]] = []
     skipped: list[dict[str, Any]] = []
-    domains: Counter[str] = Counter()
-    owners: Counter[str] = Counter()
-    categories: Counter[str] = Counter()
-    generic_email_count = 0
-    large_company_count = 0
+    seen_candidate_keys: set[str] = set()
     for prospect in prospects:
         email = prospect.get("email", "").lower()
         domain = email.split("@")[-1] if email else ""
@@ -2145,11 +2145,11 @@ def discover(
             email in excluded_emails
             or domain in excluded_domains
             or project_key in excluded_project_keys
-            or (email and email in unique)
             or (email and email in memory["emails"])
             or owner_key(prospect.get("owner_login", "")) in memory["owners"]
             or prospect["project_url"].strip().lower() in memory["repos"]
             or normalize_name(prospect["name"]) in memory["names"]
+            or (contact_key or project_key) in seen_candidate_keys
         ):
             duplicate_reason = "duplicate_or_previously_seen"
         if duplicate_reason:
@@ -2169,37 +2169,15 @@ def discover(
             diagnostics["excluded"] = False
             diagnostics["skip_reason"] = ""
             diagnostics["exclusion_rule_triggered"] = ""
-        owner = diagnostics["owner_key"]
-        if not diagnostics["excluded"] and owners[owner] >= 1:
+        if not diagnostics["excluded"] and not email:
             diagnostics.update(
                 {
                     "excluded": True,
-                    "skip_reason": "owner_diversity_cap",
-                    "exclusion_rule_triggered": "owner_diversity_cap",
-                }
-            )
-        if not diagnostics["excluded"] and categories[prospect["category"]] >= 2:
-            diagnostics.update(
-                {
-                    "excluded": True,
-                    "skip_reason": "category_diversity_cap",
-                    "exclusion_rule_triggered": "category_diversity_cap",
-                }
-            )
-        if not diagnostics["excluded"] and diagnostics["generic"] and generic_email_count >= 1:
-            diagnostics.update(
-                {
-                    "excluded": True,
-                    "skip_reason": "generic_email_cap",
-                    "exclusion_rule_triggered": "generic_email_cap",
-                }
-            )
-        if not diagnostics["excluded"] and diagnostics["large_company"] and large_company_count >= 1:
-            diagnostics.update(
-                {
-                    "excluded": True,
-                    "skip_reason": "large_company_cap",
-                    "exclusion_rule_triggered": "large_company_cap",
+                    "skip_reason": "alternate_channel_only",
+                    "exclusion_rule_triggered": "alternate_channel_only",
+                    "missing_evidence": unique_preserve_order(
+                        [*diagnostics["missing_evidence"], "verified public email contact"]
+                    ),
                 }
             )
         if diagnostics["excluded"]:
@@ -2213,8 +2191,65 @@ def discover(
                 }
             )
             continue
+        seen_candidate_keys.add(contact_key or project_key)
         prospect["diagnostics"] = diagnostics
-        unique[contact_key or project_key] = prospect
+        candidates.append(
+            (
+                prospect,
+                diagnostics,
+                contact_key or project_key,
+                domain,
+                diagnostics["owner_key"],
+            )
+        )
+
+    candidates.sort(
+        key=lambda item: (
+            int(not item[1]["generic"]),
+            int(item[1]["contact_quality"]),
+            len(item[1]["evidence_points"]),
+            len(item[1]["pain_signals"]),
+            int(item[1]["small_team_context"]),
+            -int(item[1]["updated_days"] if item[1]["updated_days"] is not None else 10**9),
+        ),
+        reverse=True,
+    )
+
+    unique: dict[str, dict[str, Any]] = {}
+    domains: Counter[str] = Counter()
+    owners: Counter[str] = Counter()
+    categories: Counter[str] = Counter()
+    generic_email_count = 0
+    large_company_count = 0
+    for prospect, diagnostics, contact_key, domain, owner in candidates:
+        exclusion_rule = ""
+        if owners[owner] >= 1:
+            exclusion_rule = "owner_diversity_cap"
+        elif categories[prospect["category"]] >= 2:
+            exclusion_rule = "category_diversity_cap"
+        elif diagnostics["generic"] and generic_email_count >= 1:
+            exclusion_rule = "generic_email_cap"
+        elif diagnostics["large_company"] and large_company_count >= 1:
+            exclusion_rule = "large_company_cap"
+        if exclusion_rule:
+            diagnostics.update(
+                {
+                    "excluded": True,
+                    "skip_reason": exclusion_rule,
+                    "exclusion_rule_triggered": exclusion_rule,
+                }
+            )
+            skipped.append(
+                {
+                    "prospect_id": prospect["prospect_id"],
+                    "project": prospect["project"],
+                    "email": prospect["email"],
+                    "category": prospect["category"],
+                    **diagnostics,
+                }
+            )
+            continue
+        unique[contact_key] = prospect
         if domain:
             domains[domain] += 1
         owners[owner] += 1
