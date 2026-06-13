@@ -69,6 +69,24 @@ export default function ConversationsPage() {
                         <MessageApproveButton messageId={message.id} />
                       ) : null}
                     </div>
+                    {repository.listDeliveryAttempts(message.id).map((attempt) => (
+                      <div
+                        key={attempt.id}
+                        className="mt-3 rounded border bg-black/20 px-3 py-2 text-xs text-muted-foreground"
+                      >
+                        <span className="font-medium text-foreground">
+                          {attempt.adapterId} attempt {attempt.attemptNumber}
+                        </span>
+                        {" · "}
+                        {attempt.status}
+                        {attempt.externalMessageId
+                          ? ` · ${attempt.externalMessageId}`
+                          : ""}
+                        {attempt.failureMessage ? (
+                          <p className="mt-1 text-red-300">{attempt.failureMessage}</p>
+                        ) : null}
+                      </div>
+                    ))}
                   </div>
                 ))}
               </div>

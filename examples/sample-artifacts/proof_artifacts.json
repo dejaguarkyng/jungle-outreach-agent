@@ -1,0 +1,22 @@
+{
+  "schema_version": "3.0",
+  "items": [
+    {
+      "prospect_id": "sample-mcp-worker",
+      "type": "implementation_plan",
+      "title": "Jungle Grid proof of value for sample/mcp-worker",
+      "content": "Implementation plan for sample/mcp-worker: use the evidenced workflow MCP Worker lets agent clients launch observable batch inference tasks [ev_f9bc22aa682a5a6d] as the baseline, integrate Jungle Grid behind one adapter, run a pilot, and compare reliability and delivery time. Sources: [ev_f9bc22aa682a5a6d] [ev_7bda7531b3582100] [ev_af2ca0818bcf50aa] [ev_85f278e91fb8f02d] [ev_ccd04ee46bc73b97] [ev_9949262a08e3bacb] [ev_be9b87c519d02a3a]",
+      "uri": null,
+      "evidence_ids": [
+        "ev_f9bc22aa682a5a6d",
+        "ev_7bda7531b3582100",
+        "ev_af2ca0818bcf50aa",
+        "ev_85f278e91fb8f02d",
+        "ev_ccd04ee46bc73b97",
+        "ev_9949262a08e3bacb",
+        "ev_be9b87c519d02a3a"
+      ],
+      "junglegrid_job_id": "fixture-job"
+    }
+  ]
+}

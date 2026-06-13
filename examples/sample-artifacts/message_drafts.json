@@ -1,0 +1,48 @@
+{
+  "schema_version": "3.0",
+  "items": [
+    {
+      "prospect_id": "sample-mcp-worker",
+      "contact_point": {
+        "type": "email",
+        "value": "morgan@mcp-worker.dev",
+        "source_url": "https://mcp-worker.dev/about",
+        "publicly_listed": true,
+        "authorized": true,
+        "confidence": 0.8
+      },
+      "channel": "email",
+      "content_type": "email",
+      "fit_score": 78,
+      "subject": "Jungle Grid and mcp-worker",
+      "body": "Hi Morgan,\n\nI read the public docs for mcp-worker and noticed MCP Worker lets agent clients launch observable batch inference tasks. I\u2019m building Jungle Grid: Durable managed execution for inference, workers, retries, logs, and artifacts. Jungle Grid is meant to add routed compute capacity without making you own the execution layer.\n\nThe reason I reached out is that MCP Worker lets agent clients launch observable batch inference tasks. That detail matches the audience and operating signals configured for this campaign.\n\nIf that is a live problem for you, the shortest overview is https://junglegrid.dev.\n\nBenedict",
+      "word_count": 94,
+      "links": [
+        "https://junglegrid.dev"
+      ],
+      "evidence_urls": [
+        "https://mcp-worker.dev/about",
+        "https://github.com/sample/mcp-worker",
+        "https://github.com/sample/mcp-worker#readme"
+      ],
+      "personalization_claims": [
+        "MCP Worker lets agent clients launch observable batch inference tasks"
+      ],
+      "evidence_ids": [
+        "ev_f9bc22aa682a5a6d",
+        "ev_7bda7531b3582100",
+        "ev_af2ca0818bcf50aa",
+        "ev_85f278e91fb8f02d",
+        "ev_ccd04ee46bc73b97",
+        "ev_9949262a08e3bacb",
+        "ev_be9b87c519d02a3a"
+      ],
+      "model_mode": "template",
+      "delivery_capability": "available",
+      "approval_status": "approval_required",
+      "validation_status": "send_ready",
+      "validation_errors": [],
+      "junglegrid_job_id": "fixture-job"
+    }
+  ]
+}

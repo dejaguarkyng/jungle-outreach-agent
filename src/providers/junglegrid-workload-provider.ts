@@ -2,6 +2,13 @@ import { getEnv, type AppEnv } from "@/src/config/env";
 import {
   requiredArtifactNames,
   conversationTurnResultSchema,
+  messageDraftsFileSchema,
+  proofArtifactsFileSchema,
+  prospectsFileSchema,
+  researchNotesFileSchema,
+  runSummaryArtifactSchema,
+  scoredProspectsFileSchema,
+  validationReportArtifactSchema,
   type ArtifactBundle,
   type CampaignConfiguration,
   type ConversationTurnResult,
@@ -257,13 +264,23 @@ export class JungleGridWorkloadProvider {
     );
     const downloaded = Object.fromEntries(values);
     return {
-      prospects: downloaded["prospects.json"],
-      research_notes: downloaded["research_notes.json"],
-      scored_prospects: downloaded["scored_prospects.json"],
-      email_drafts: downloaded["email_drafts.json"],
-      run_summary: downloaded["run_summary.json"],
-      validation_report: downloaded["validation_report.json"],
-    } as ArtifactBundle;
+      schema_version: "3.0",
+      prospects: prospectsFileSchema.parse(downloaded["prospects.json"]).items,
+      research_notes: researchNotesFileSchema.parse(downloaded["research_notes.json"]).items,
+      scored_prospects: scoredProspectsFileSchema.parse(
+        downloaded["scored_prospects.json"],
+      ).items,
+      proof_artifacts: proofArtifactsFileSchema.parse(
+        downloaded["proof_artifacts.json"],
+      ).items,
+      message_drafts: messageDraftsFileSchema.parse(
+        downloaded["message_drafts.json"],
+      ).items,
+      run_summary: runSummaryArtifactSchema.parse(downloaded["run_summary.json"]),
+      validation_report: validationReportArtifactSchema.parse(
+        downloaded["validation_report.json"],
+      ),
+    } satisfies ArtifactBundle;
   }
 
   async downloadConversationTurnResult(jobId: string): Promise<ConversationTurnResult> {
@@ -299,7 +316,7 @@ export class JungleGridWorkloadProvider {
     ];
     if (category) command.push("--category", category);
     const jobContract = {
-      schema_version: "1.0",
+      schema_version: "3.0",
       workspace_id: campaign?.workspaceId ?? "default",
       campaign_id: campaign?.campaignId ?? "jungle-grid",
       pipeline_stage: "full_pipeline",
@@ -309,6 +326,7 @@ export class JungleGridWorkloadProvider {
         "semantic_qualification",
         "entity_resolution",
         "prospect_scoring",
+        "proof_generation",
         "outreach_drafting",
         "semantic_validation",
       ],
@@ -359,6 +377,7 @@ export class JungleGridWorkloadProvider {
         FIT_SCORE_THRESHOLD: String(this.env.FIT_SCORE_THRESHOLD),
         MAX_DRAFTS_PER_DOMAIN: String(this.env.MAX_DRAFTS_PER_DOMAIN),
         GITHUB_TOKEN: this.env.GITHUB_TOKEN ?? "",
+        OUTREACH_SOURCES_CONFIG: "/app/config/sources.yaml",
         OUTREACH_EXCLUDED_EMAILS: JSON.stringify(exclusions?.emails ?? []),
         OUTREACH_EXCLUDED_DOMAINS: JSON.stringify(exclusions?.domains ?? []),
         OUTREACH_EXCLUDED_PROJECT_KEYS: JSON.stringify(exclusions?.projectKeys ?? []),
@@ -371,7 +390,7 @@ export class JungleGridWorkloadProvider {
         application: "openline",
         mode,
         execution_backend: "jungle_grid",
-        schema_version: "1.0",
+        schema_version: "3.0",
         workspace_id: campaign?.workspaceId ?? "default",
         campaign_id: campaign?.campaignId ?? "jungle-grid",
         campaign_name: campaign?.name ?? "Jungle Grid AI execution",

@@ -47,13 +47,16 @@ It is designed for:
 
 ## What is implemented
 
-- Configurable campaign files for offer, ICP, qualification, scoring, messaging, and model choices.
+- Business profile setup and saved campaigns in the UI.
+- Configurable campaign contracts for offer, ICP, qualification, scoring, messaging, and model choices.
 - Public-source adapter registry with health, retries, rate limits, source signals, and deterministic fixtures.
 - Prospect research with public contact provenance and evidence URLs.
 - Fit scoring, proof-of-value artifacts, and structured JSON exports.
 - Managed Qwen/Ollama drafting and semantic validation inside the worker workload.
 - Strict artifact contracts and backend revalidation before local persistence.
 - Next.js dashboard, route handlers, SQLite persistence, run logs, artifact views, and exports.
+- Seed prospect import from CSV or JSON with preview validation.
+- Suppression import from CSV or JSON with preview validation.
 - Internal draft review, editing, approval/rejection, suppression, blocklist controls, and policy-gated ZeptoMail sending.
 - Conversation history, inbound reply ingestion, scheduled follow-up evaluation, and approval-required messages.
 - Docker worker image workflow, CI, release automation, and sample dry-run data.
@@ -209,6 +212,15 @@ npm run dev
 
 Open `http://localhost:3000`. The UI can be inspected without credentials, but campaign execution requires a working `JUNGLEGRID_API_KEY`.
 
+Recommended first-run flow inside the app:
+
+1. Open `Settings` and save the business profile.
+2. Open `Campaigns` and create a saved campaign from a preset.
+3. Open `Prospects` and import seed rows if you already have them.
+4. Import suppressions in `Settings` if you have existing opt-outs or exclusions.
+5. Configure only the provider credentials you plan to use.
+6. Start a manual run.
+
 `npm run setup` installs dependencies, prompts for the API key when run in a terminal, verifies API reachability, estimates and submits a one-item template workload, waits for completion, and checks its events, logs, and six artifacts. The verification job uses managed capacity and may incur a small charge. Create an account at [junglegrid.dev](https://junglegrid.dev), issue an API key from the account dashboard, and provide it when setup prompts.
 
 ## Manual setup
@@ -218,6 +230,52 @@ Required for production:
 - A Jungle Grid API key.
 - A ZeptoMail send-mail token.
 - A verified ZeptoMail sender domain/address.
+
+## Import formats
+
+### Seed prospects CSV
+
+Use headers like:
+
+```csv
+name,email,company,project,category,websiteUrl,githubUrl,projectDescription
+Jane Maintainer,jane@example.com,Acme,Acme Platform,saas,https://acme.example,https://github.com/acme/platform,Durable workflow platform
+```
+
+### Seed prospects JSON
+
+```json
+[
+  {
+    "name": "Jane Maintainer",
+    "email": "jane@example.com",
+    "company": "Acme",
+    "project": "Acme Platform",
+    "category": "saas",
+    "websiteUrl": "https://acme.example"
+  }
+]
+```
+
+### Suppressions CSV
+
+```csv
+email,domain,reason,source
+,no-contact.example,manual suppression,operator_import
+blocked@example.com,,customer opt-out,crm_import
+```
+
+### Suppressions JSON
+
+```json
+[
+  {
+    "domain": "no-contact.example",
+    "reason": "manual suppression",
+    "source": "operator_import"
+  }
+]
+```
 - A compliant email use case before enabling `EMAIL_SEND_MODE=manual_approval_only`.
 
 Optional:

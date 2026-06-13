@@ -13,8 +13,15 @@ import {
   type JungleGridJob,
 } from "@/src/providers/junglegrid-workload-provider";
 import type { ConversationTurnResult } from "@/src/domain/schemas";
+import { DeliveryService } from "@/src/delivery/service";
 
 const OPT_OUT = /\b(unsubscribe|opt\s*out|stop contacting|do not contact|remove me)\b/i;
+const defaultEmailSender = async (input: {
+  toEmail: string;
+  toName: string;
+  subject: string;
+  body: string;
+}) => new ZeptoMailService().send(input);
 
 export type ConversationExecutionProvider = {
   available(): boolean;
@@ -39,6 +46,7 @@ export type AutonomyContext = {
   optedOut: boolean;
   escalationRequired: boolean;
   junglegridJobId: string | null;
+  firstTouch?: boolean;
 };
 
 export function evaluateAutonomy(context: AutonomyContext): {
@@ -58,6 +66,7 @@ export function evaluateAutonomy(context: AutonomyContext): {
   if (context.escalationRequired) reasons.push("escalation_required");
   if (!context.junglegridJobId) reasons.push("junglegrid_execution_missing");
   if (reasons.length) return { decision: "block", reasons };
+  if (context.firstTouch) return { decision: "request_approval", reasons: [] };
   if (context.mode === "draft_only") return { decision: "draft", reasons: [] };
   if (context.mode === "confirmation_required") {
     return { decision: "request_approval", reasons: [] };
@@ -66,6 +75,8 @@ export function evaluateAutonomy(context: AutonomyContext): {
 }
 
 export class ConversationService {
+  private readonly deliveryService: DeliveryService | null;
+
   constructor(
     readonly repository = new OutreachRepository(),
     private readonly sendEmail: (input: {
@@ -73,11 +84,17 @@ export class ConversationService {
       toName: string;
       subject: string;
       body: string;
-    }) => Promise<{ providerMessageId: string | null }> = async (input) =>
-      new ZeptoMailService().send(input),
+    }) => Promise<{ providerMessageId: string | null }> = defaultEmailSender,
     private readonly executionProvider: ConversationExecutionProvider =
       new JungleGridWorkloadProvider(),
-  ) {}
+    deliveryService?: DeliveryService,
+  ) {
+    this.deliveryService =
+      deliveryService ??
+      (this.sendEmail === defaultEmailSender
+        ? new DeliveryService(this.repository)
+        : null);
+  }
 
   async processInbound(input: {
     conversationId: string;
@@ -362,7 +379,12 @@ export class ConversationService {
     if (!conversation) throw new Error("Conversation not found.");
     const contact = this.repository.getContactPoint(conversation.contactPointId);
     if (!contact) throw new Error("Conversation contact point not found.");
-    const policy = this.decideNextMessage(input.conversationId, input.context);
+    const policy = this.decideNextMessage(input.conversationId, {
+      ...input.context,
+      firstTouch:
+        input.context.firstTouch ??
+        this.repository.listConversationMessages(input.conversationId).length === 0,
+    });
     const status =
       policy.decision === "draft"
         ? "draft"
@@ -383,6 +405,9 @@ export class ConversationService {
       policyDecisionId: policy.policyDecisionId,
     });
     if (policy.decision !== "send") return message;
+    if (this.deliveryService) {
+      return (await this.deliveryService.sendMessage(message.id)).message;
+    }
     if (conversation.channel !== "email" || contact.type !== "email") {
       return this.repository.updateMessageStatus(message.id, "failed");
     }
@@ -498,6 +523,9 @@ export class ConversationService {
       throw new Error("Conversation contact is suppressed or blocked.");
     }
     this.repository.updateMessageStatus(message.id, "approved");
+    if (this.deliveryService) {
+      return (await this.deliveryService.sendMessage(message.id)).message;
+    }
     try {
       const result = await this.sendEmail({
         toEmail: contact.value,

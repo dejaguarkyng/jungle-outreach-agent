@@ -24,7 +24,37 @@ export function getDatabase(): Database.Database {
   database = new Database(databasePath);
   database.pragma("journal_mode = WAL");
   database.pragma("foreign_keys = ON");
-  migrate(database);
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version TEXT PRIMARY KEY,
+      applied_at TEXT NOT NULL,
+      backup_path TEXT
+    )
+  `);
+  const current = database
+    .prepare("SELECT version FROM schema_migrations WHERE version = '3.0'")
+    .get();
+  if (!current) {
+    const backupPath = createPreMigrationBackup(database, databasePath);
+    try {
+      migrate(database);
+      database
+        .prepare(
+          "INSERT INTO schema_migrations (version, applied_at, backup_path) VALUES ('3.0', ?, ?)",
+        )
+        .run(new Date().toISOString(), backupPath);
+    } catch (error) {
+      database.close();
+      database = undefined;
+      throw new Error(
+        `Openline v3 database migration failed; startup is blocked. ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  } else {
+    migrate(database);
+  }
   return database;
 }
 
@@ -118,6 +148,7 @@ function migrate(db: Database.Database): void {
       retry_count INTEGER NOT NULL DEFAULT 0,
       model_mode TEXT,
       artifacts_json TEXT NOT NULL DEFAULT '[]',
+      run_summary_json TEXT,
       phase TEXT NOT NULL DEFAULT 'queued',
       notes TEXT,
       error TEXT,
@@ -205,6 +236,37 @@ function migrate(db: Database.Database): void {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS business_profile (
+      id TEXT PRIMARY KEY,
+      company_name TEXT NOT NULL,
+      website TEXT NOT NULL,
+      description TEXT NOT NULL,
+      archetype TEXT NOT NULL,
+      offer_name TEXT NOT NULL,
+      offer_description TEXT NOT NULL,
+      offer_url TEXT NOT NULL,
+      sender_name TEXT NOT NULL,
+      sender_email TEXT,
+      signature TEXT NOT NULL,
+      target_market_summary TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS campaigns (
+      id TEXT PRIMARY KEY,
+      campaign_id TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1,
+      archetype TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'saved',
+      config_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_campaigns_active
+      ON campaigns(active, updated_at DESC);
+
     CREATE TABLE IF NOT EXISTS audit_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       actor TEXT NOT NULL,
@@ -286,6 +348,7 @@ function migrate(db: Database.Database): void {
       status TEXT NOT NULL,
       classification TEXT,
       validation_status TEXT NOT NULL,
+      evidence_ids TEXT NOT NULL DEFAULT '[]',
       junglegrid_job_id TEXT,
       policy_decision_id TEXT REFERENCES policy_decisions(id) ON DELETE SET NULL,
       external_message_id TEXT,
@@ -306,6 +369,72 @@ function migrate(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_conversation_jobs_conversation
       ON conversation_jobs(conversation_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS provider_authorizations (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      destination_pattern TEXT NOT NULL,
+      permissions TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'active',
+      authorized_by TEXT NOT NULL,
+      authorized_at TEXT NOT NULL,
+      expires_at TEXT,
+      UNIQUE(workspace_id, provider, destination_pattern)
+    );
+
+    CREATE TABLE IF NOT EXISTS browser_sessions (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      encrypted_payload TEXT NOT NULL,
+      encryption_iv TEXT NOT NULL,
+      encryption_tag TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      expires_at TEXT,
+      UNIQUE(workspace_id, provider)
+    );
+
+    CREATE TABLE IF NOT EXISTS delivery_jobs (
+      id TEXT PRIMARY KEY,
+      message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+      adapter_id TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL DEFAULT 'queued',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      completed_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS delivery_attempts (
+      id TEXT PRIMARY KEY,
+      job_id TEXT NOT NULL REFERENCES delivery_jobs(id) ON DELETE CASCADE,
+      message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+      adapter_id TEXT NOT NULL,
+      attempt_number INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      retry_class TEXT NOT NULL DEFAULT 'none',
+      provider_response TEXT NOT NULL DEFAULT '{}',
+      external_message_id TEXT,
+      failure_code TEXT,
+      failure_message TEXT,
+      created_at TEXT NOT NULL,
+      completed_at TEXT,
+      UNIQUE(job_id, attempt_number)
+    );
+    CREATE INDEX IF NOT EXISTS idx_delivery_attempts_message
+      ON delivery_attempts(message_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS delivery_screenshots (
+      id TEXT PRIMARY KEY,
+      attempt_id TEXT NOT NULL REFERENCES delivery_attempts(id) ON DELETE CASCADE,
+      path TEXT NOT NULL,
+      redacted INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL
+    );
   `);
 
   ensureColumn(db, "outreach_runs", "mode", "TEXT NOT NULL DEFAULT 'local-template'");
@@ -313,6 +442,7 @@ function migrate(db: Database.Database): void {
   ensureColumn(db, "outreach_runs", "retry_count", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "outreach_runs", "model_mode", "TEXT");
   ensureColumn(db, "outreach_runs", "artifacts_json", "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, "outreach_runs", "run_summary_json", "TEXT");
   ensureColumn(db, "email_drafts", "to_email", "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "email_drafts", "from_email", "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "email_drafts", "from_name", "TEXT NOT NULL DEFAULT ''");
@@ -333,6 +463,7 @@ function migrate(db: Database.Database): void {
   ensureColumn(db, "prospects", "qualification_junglegrid_job_id", "TEXT");
   ensureColumn(db, "prospects", "scoring_junglegrid_job_id", "TEXT");
   ensureColumn(db, "research_notes", "junglegrid_job_id", "TEXT");
+  ensureColumn(db, "messages", "evidence_ids", "TEXT NOT NULL DEFAULT '[]'");
 
   const env = getEnv();
   db.prepare(
@@ -356,6 +487,28 @@ function migrate(db: Database.Database): void {
      WHERE evidence_urls = '[]'`,
   ).run();
   backfillContactPointsAndMessages(db);
+}
+
+function createPreMigrationBackup(
+  db: Database.Database,
+  databasePath: string,
+): string | null {
+  if (databasePath === ":memory:" || !fs.existsSync(databasePath)) return null;
+  const hasApplicationSchema = db
+    .prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name IN ('prospects', 'email_drafts') LIMIT 1",
+    )
+    .get();
+  if (!hasApplicationSchema) return null;
+  db.pragma("wal_checkpoint(FULL)");
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backupPath = `${databasePath}.pre-v3-${timestamp}.sqlite`;
+  const escaped = backupPath.replaceAll("'", "''");
+  db.exec(`VACUUM INTO '${escaped}'`);
+  if (!fs.existsSync(backupPath) || fs.statSync(backupPath).size === 0) {
+    throw new Error("Pre-migration database backup could not be verified.");
+  }
+  return backupPath;
 }
 
 function migrateProspectsForContactPoints(db: Database.Database): void {

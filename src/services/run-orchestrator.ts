@@ -13,7 +13,10 @@ import type {
 } from "@/src/providers/junglegrid-workload-provider";
 import { JungleGridWorkloadProvider } from "@/src/providers/junglegrid-workload-provider";
 import { artifactNames, ingestArtifactBundle } from "@/src/services/artifact-ingestion";
-import { loadCampaignConfiguration } from "@/src/services/campaign-config";
+import {
+  applySettingsToCampaign,
+  loadCampaignConfiguration,
+} from "@/src/services/campaign-config";
 import { OutreachService } from "@/src/services/outreach-service";
 
 export type RunOptions = {
@@ -122,7 +125,11 @@ async function runJungleGridOutreach(
     ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
   const ingest = dependencies.ingest ?? ingestArtifactBundle;
   const exclusions = repository.getWorkerExclusions();
-  const campaign = loadCampaignConfiguration(options.campaignId ?? "jungle-grid");
+  const settings = repository.getSettings();
+  const campaign = applySettingsToCampaign(
+    loadCampaignConfiguration(options.campaignId ?? "jungle-grid"),
+    settings,
+  );
   const workspaceId = options.workspaceId ?? campaign.workspaceId;
   const campaignId = campaign.campaignId;
   let execution = repository.getLatestJungleGridExecution(runId);
@@ -244,12 +251,16 @@ async function runJungleGridOutreach(
         }
         for (const score of Array.isArray(bundle.scored_prospects) ? bundle.scored_prospects : []) {
           score.junglegrid_job_id = jobId;
-          for (const proof of score.proof_artifacts ?? []) {
-            proof.junglegrid_job_id = jobId;
-          }
+        }
+        for (const proof of Array.isArray(bundle.proof_artifacts) ? bundle.proof_artifacts : []) {
+          proof.junglegrid_job_id = jobId;
+        }
+        for (const message of Array.isArray(bundle.message_drafts) ? bundle.message_drafts : []) {
+          message.junglegrid_job_id = jobId;
         }
       }
       repository.updateRun(runId, { phase: "validating" });
+      repository.updateRun(runId, { runSummary: bundle.run_summary });
       execution = repository.updateJungleGridExecution(execution.id, {
         executionPhase: "semantic_validation",
         pipelineStage: "semantic_validation",

@@ -53,7 +53,7 @@ describe("Jungle Grid provider", () => {
     expect(url).toBe("https://api.junglegrid.dev/v1/jobs");
     const payload = JSON.parse(String(init.body));
     expect(payload.command).toContain("full-run-qwen");
-    expect(payload.expected_artifacts).toHaveLength(6);
+    expect(payload.expected_artifacts).toHaveLength(7);
     expect(payload.environment.OLLAMA_MODEL).toBe("qwen2.5:3b");
     expect(payload.environment.LLM_FALLBACK_MODE).toBe("disabled");
     expect(payload.requires_gpu).toBe(true);
@@ -61,7 +61,8 @@ describe("Jungle Grid provider", () => {
     expect(payload.optimize_for).toBe("cost");
     expect(payload.registry_credential_id).toBe("regcred-test");
     const contract = JSON.parse(payload.environment.OUTREACH_JOB_CONTRACT);
-    expect(contract.schema_version).toBe("1.0");
+    expect(contract.schema_version).toBe("3.0");
+    expect(contract.pipeline_stages).toContain("proof_generation");
     expect(contract.pipeline_stages).toContain("semantic_validation");
     expect(contract.execution.batching.research_batch_size).toBe(20);
     expect(contract.execution.concurrency.maximum_active_jobs).toBe(4);

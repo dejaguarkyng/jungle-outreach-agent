@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { getDatabase } from "@/src/db/database";
 import {
+  businessProfileInputSchema,
+  businessProfileSchema,
+  campaignConfigurationSchema,
+  campaignRecordSchema,
   emailDraftSchema,
   prospectSchema,
   researchNoteSchema,
@@ -12,6 +16,10 @@ import {
   type DraftDeliveryStatus,
   type ContactPoint,
   type ContactPointType,
+  type BusinessProfile,
+  type BusinessProfileInput,
+  type CampaignConfiguration,
+  type CampaignRecord,
   type Conversation,
   type EmailDraft,
   type Message,
@@ -25,6 +33,8 @@ import {
   type ScoreBreakdown,
   type Suppression,
   type ProofArtifact,
+  type DeliveryAttempt,
+  type ProviderAuthorization,
 } from "@/src/domain/schemas";
 import { getEnv } from "@/src/config/env";
 
@@ -235,6 +245,39 @@ function mapConversation(row: Record<string, unknown>): Conversation {
   };
 }
 
+function mapBusinessProfile(row: Record<string, unknown>): BusinessProfile {
+  return businessProfileSchema.parse({
+    id: row.id,
+    companyName: row.company_name,
+    website: row.website,
+    description: row.description,
+    archetype: row.archetype,
+    offerName: row.offer_name,
+    offerDescription: row.offer_description,
+    offerUrl: row.offer_url,
+    senderName: row.sender_name,
+    senderEmail: row.sender_email ?? null,
+    signature: row.signature,
+    targetMarketSummary: row.target_market_summary,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  });
+}
+
+function mapCampaignRecord(row: Record<string, unknown>): CampaignRecord {
+  return campaignRecordSchema.parse({
+    id: row.id,
+    campaignId: row.campaign_id,
+    name: row.name,
+    active: Boolean(row.active),
+    archetype: row.archetype,
+    source: row.source,
+    campaign: campaignConfigurationSchema.parse(parseJson(row.config_json, {})),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  });
+}
+
 function mapMessage(row: Record<string, unknown>): Message {
   return {
     id: String(row.id),
@@ -246,6 +289,7 @@ function mapMessage(row: Record<string, unknown>): Message {
     status: row.status as Message["status"],
     classification: row.classification ? String(row.classification) : null,
     validationStatus: row.validation_status as Message["validationStatus"],
+    evidenceIds: parseJson<string[]>(row.evidence_ids, []),
     junglegridJobId: row.junglegrid_job_id ? String(row.junglegrid_job_id) : null,
     policyDecisionId: row.policy_decision_id ? String(row.policy_decision_id) : null,
     externalMessageId: row.external_message_id ? String(row.external_message_id) : null,
@@ -266,6 +310,7 @@ function mapRun(row: Record<string, unknown>): OutreachRun {
     retryCount: row.retry_count ?? 0,
     modelMode: row.model_mode ?? null,
     artifacts: parseJson<string[]>(row.artifacts_json, []),
+    runSummary: parseJson(row.run_summary_json, null),
     phase: row.phase,
     notes: row.notes,
     error: row.error,
@@ -818,6 +863,7 @@ export class OutreachRepository {
         | "retryCount"
         | "modelMode"
         | "artifacts"
+        | "runSummary"
       >
     >,
   ): OutreachRun {
@@ -834,7 +880,7 @@ export class OutreachRepository {
       .prepare(
         `UPDATE outreach_runs SET phase = ?, drafted_count = ?, failed_count = ?, notes = ?,
          error = ?, junglegrid_job_id = ?, retry_count = ?, model_mode = ?,
-         artifacts_json = ?, started_at = ?, completed_at = ? WHERE id = ?`,
+         artifacts_json = ?, run_summary_json = ?, started_at = ?, completed_at = ? WHERE id = ?`,
       )
       .run(
         next.phase,
@@ -846,6 +892,7 @@ export class OutreachRepository {
         next.retryCount,
         next.modelMode,
         JSON.stringify(next.artifacts),
+        next.runSummary ? JSON.stringify(next.runSummary) : null,
         startedAt,
         completedAt,
         id,
@@ -1514,6 +1561,7 @@ export class OutreachRepository {
     status: Message["status"];
     classification?: string | null;
     validationStatus: Message["validationStatus"];
+    evidenceIds?: string[];
     junglegridJobId?: string | null;
     policyDecisionId?: string | null;
     externalMessageId?: string | null;
@@ -1526,8 +1574,8 @@ export class OutreachRepository {
         `INSERT INTO messages (
           id, conversation_id, legacy_email_draft_id, direction, channel, subject,
           body, status, classification, validation_status, junglegrid_job_id,
-          policy_decision_id, external_message_id, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          evidence_ids, policy_decision_id, external_message_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -1541,6 +1589,7 @@ export class OutreachRepository {
         input.classification ?? null,
         input.validationStatus,
         input.junglegridJobId ?? null,
+        JSON.stringify(input.evidenceIds ?? []),
         input.policyDecisionId ?? null,
         input.externalMessageId ?? null,
         createdAt,
@@ -1576,6 +1625,322 @@ export class OutreachRepository {
       | undefined;
     if (!row) throw new Error("Message not found.");
     return mapMessage(row);
+  }
+
+  ensureDeliveryJob(input: {
+    messageId: string;
+    adapterId: string;
+    idempotencyKey: string;
+  }): { id: string; status: string } {
+    const existing = this.db
+      .prepare("SELECT id, status FROM delivery_jobs WHERE idempotency_key = ?")
+      .get(input.idempotencyKey) as { id: string; status: string } | undefined;
+    if (existing) return existing;
+    const id = randomUUID();
+    const timestamp = now();
+    this.db
+      .prepare(
+        `INSERT INTO delivery_jobs (
+          id, message_id, adapter_id, idempotency_key, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 'queued', ?, ?)`,
+      )
+      .run(
+        id,
+        input.messageId,
+        input.adapterId,
+        input.idempotencyKey,
+        timestamp,
+        timestamp,
+      );
+    return { id, status: "queued" };
+  }
+
+  updateDeliveryJob(
+    id: string,
+    status: "queued" | "sending" | "sent" | "blocked" | "retryable" | "failed",
+  ): void {
+    const timestamp = now();
+    this.db
+      .prepare(
+        `UPDATE delivery_jobs SET status = ?, updated_at = ?,
+         completed_at = CASE WHEN ? IN ('sent', 'blocked', 'failed') THEN ? ELSE completed_at END
+         WHERE id = ?`,
+      )
+      .run(status, timestamp, status, timestamp, id);
+  }
+
+  addDeliveryAttempt(input: {
+    jobId: string;
+    messageId: string;
+    adapterId: string;
+    status?: DeliveryAttempt["status"];
+  }): DeliveryAttempt {
+    const count = this.db
+      .prepare("SELECT COUNT(*) AS count FROM delivery_attempts WHERE job_id = ?")
+      .get(input.jobId) as { count: number };
+    const id = randomUUID();
+    const createdAt = now();
+    this.db
+      .prepare(
+        `INSERT INTO delivery_attempts (
+          id, job_id, message_id, adapter_id, attempt_number, status, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        input.jobId,
+        input.messageId,
+        input.adapterId,
+        count.count + 1,
+        input.status ?? "sending",
+        createdAt,
+      );
+    return this.getDeliveryAttempt(id)!;
+  }
+
+  completeDeliveryAttempt(
+    id: string,
+    input: {
+      status: DeliveryAttempt["status"];
+      retryClass?: DeliveryAttempt["retryClass"];
+      providerResponse?: Record<string, unknown>;
+      externalMessageId?: string | null;
+      failureCode?: string | null;
+      failureMessage?: string | null;
+    },
+  ): DeliveryAttempt {
+    this.db
+      .prepare(
+        `UPDATE delivery_attempts SET status = ?, retry_class = ?,
+         provider_response = ?, external_message_id = ?, failure_code = ?,
+         failure_message = ?, completed_at = ? WHERE id = ?`,
+      )
+      .run(
+        input.status,
+        input.retryClass ?? "none",
+        JSON.stringify(input.providerResponse ?? {}),
+        input.externalMessageId ?? null,
+        input.failureCode ?? null,
+        input.failureMessage ?? null,
+        now(),
+        id,
+      );
+    return this.getDeliveryAttempt(id)!;
+  }
+
+  getDeliveryAttempt(id: string): DeliveryAttempt | null {
+    const row = this.db.prepare("SELECT * FROM delivery_attempts WHERE id = ?").get(id) as
+      | Record<string, unknown>
+      | undefined;
+    return row ? this.mapDeliveryAttempt(row) : null;
+  }
+
+  listDeliveryAttempts(messageId: string): DeliveryAttempt[] {
+    return (
+      this.db
+        .prepare(
+          "SELECT * FROM delivery_attempts WHERE message_id = ? ORDER BY created_at DESC",
+        )
+        .all(messageId) as Record<string, unknown>[]
+    ).map((row) => this.mapDeliveryAttempt(row));
+  }
+
+  saveProviderAuthorization(input: {
+    workspaceId: string;
+    provider: string;
+    destinationPattern: string;
+    permissions: string[];
+    authorizedBy: string;
+    expiresAt?: string | null;
+  }): ProviderAuthorization {
+    const id = randomUUID();
+    const authorizedAt = now();
+    this.db
+      .prepare(
+        `INSERT INTO provider_authorizations (
+          id, workspace_id, provider, destination_pattern, permissions, status,
+          authorized_by, authorized_at, expires_at
+        ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)
+        ON CONFLICT(workspace_id, provider, destination_pattern) DO UPDATE SET
+          permissions = excluded.permissions, status = 'active',
+          authorized_by = excluded.authorized_by, authorized_at = excluded.authorized_at,
+          expires_at = excluded.expires_at`,
+      )
+      .run(
+        id,
+        input.workspaceId,
+        input.provider,
+        input.destinationPattern,
+        JSON.stringify(input.permissions),
+        input.authorizedBy,
+        authorizedAt,
+        input.expiresAt ?? null,
+      );
+    return this.getProviderAuthorization(
+      input.workspaceId,
+      input.provider,
+      input.destinationPattern,
+    )!;
+  }
+
+  getProviderAuthorization(
+    workspaceId: string,
+    provider: string,
+    destination: string,
+  ): ProviderAuthorization | null {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM provider_authorizations
+         WHERE workspace_id = ? AND provider = ? AND status = 'active'
+         AND (expires_at IS NULL OR expires_at > ?)`,
+      )
+      .all(workspaceId, provider, now()) as Record<string, unknown>[];
+    const row = rows.find((item) =>
+      destination.toLowerCase().includes(String(item.destination_pattern).toLowerCase()),
+    );
+    return row ? this.mapProviderAuthorization(row) : null;
+  }
+
+  listProviderAuthorizations(workspaceId = "default"): ProviderAuthorization[] {
+    return (
+      this.db
+        .prepare(
+          "SELECT * FROM provider_authorizations WHERE workspace_id = ? ORDER BY authorized_at DESC",
+        )
+        .all(workspaceId) as Record<string, unknown>[]
+    ).map((row) => this.mapProviderAuthorization(row));
+  }
+
+  revokeProviderAuthorization(id: string): void {
+    this.db
+      .prepare("UPDATE provider_authorizations SET status = 'revoked' WHERE id = ?")
+      .run(id);
+  }
+
+  saveBrowserSession(input: {
+    workspaceId: string;
+    provider: string;
+    encryptedPayload: string;
+    iv: string;
+    tag: string;
+    expiresAt?: string | null;
+  }): void {
+    const id = randomUUID();
+    const timestamp = now();
+    this.db
+      .prepare(
+        `INSERT INTO browser_sessions (
+          id, workspace_id, provider, encrypted_payload, encryption_iv,
+          encryption_tag, status, created_at, updated_at, expires_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
+        ON CONFLICT(workspace_id, provider) DO UPDATE SET
+          encrypted_payload = excluded.encrypted_payload,
+          encryption_iv = excluded.encryption_iv,
+          encryption_tag = excluded.encryption_tag,
+          status = 'active', updated_at = excluded.updated_at,
+          expires_at = excluded.expires_at`,
+      )
+      .run(
+        id,
+        input.workspaceId,
+        input.provider,
+        input.encryptedPayload,
+        input.iv,
+        input.tag,
+        timestamp,
+        timestamp,
+        input.expiresAt ?? null,
+      );
+  }
+
+  getBrowserSession(
+    workspaceId: string,
+    provider: string,
+  ): {
+    encryptedPayload: string;
+    iv: string;
+    tag: string;
+    expiresAt: string | null;
+  } | null {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM browser_sessions WHERE workspace_id = ? AND provider = ?
+         AND status = 'active' AND (expires_at IS NULL OR expires_at > ?)`,
+      )
+      .get(workspaceId, provider, now()) as Record<string, unknown> | undefined;
+    return row
+      ? {
+          encryptedPayload: String(row.encrypted_payload),
+          iv: String(row.encryption_iv),
+          tag: String(row.encryption_tag),
+          expiresAt: row.expires_at ? String(row.expires_at) : null,
+        }
+      : null;
+  }
+
+  revokeBrowserSession(workspaceId: string, provider: string): void {
+    this.db
+      .prepare(
+        `UPDATE browser_sessions SET status = 'revoked', updated_at = ?
+         WHERE workspace_id = ? AND provider = ?`,
+      )
+      .run(now(), workspaceId, provider);
+  }
+
+  saveDeliveryScreenshot(input: {
+    attemptId: string;
+    path: string;
+    expiresAt: string;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO delivery_screenshots (
+          id, attempt_id, path, redacted, created_at, expires_at
+        ) VALUES (?, ?, ?, 1, ?, ?)`,
+      )
+      .run(randomUUID(), input.attemptId, input.path, now(), input.expiresAt);
+  }
+
+  listExpiredDeliveryScreenshots(through = now()): Array<{ id: string; path: string }> {
+    return this.db
+      .prepare("SELECT id, path FROM delivery_screenshots WHERE expires_at <= ?")
+      .all(through) as Array<{ id: string; path: string }>;
+  }
+
+  deleteDeliveryScreenshot(id: string): void {
+    this.db.prepare("DELETE FROM delivery_screenshots WHERE id = ?").run(id);
+  }
+
+  private mapDeliveryAttempt(row: Record<string, unknown>): DeliveryAttempt {
+    return {
+      id: String(row.id),
+      jobId: String(row.job_id),
+      messageId: String(row.message_id),
+      adapterId: String(row.adapter_id),
+      attemptNumber: Number(row.attempt_number),
+      status: String(row.status) as DeliveryAttempt["status"],
+      retryClass: String(row.retry_class) as DeliveryAttempt["retryClass"],
+      providerResponse: parseJson<Record<string, unknown>>(row.provider_response, {}),
+      externalMessageId: row.external_message_id ? String(row.external_message_id) : null,
+      failureCode: row.failure_code ? String(row.failure_code) : null,
+      failureMessage: row.failure_message ? String(row.failure_message) : null,
+      createdAt: String(row.created_at),
+      completedAt: row.completed_at ? String(row.completed_at) : null,
+    };
+  }
+
+  private mapProviderAuthorization(row: Record<string, unknown>): ProviderAuthorization {
+    return {
+      id: String(row.id),
+      workspaceId: String(row.workspace_id),
+      provider: String(row.provider),
+      destinationPattern: String(row.destination_pattern),
+      permissions: parseJson<string[]>(row.permissions, []),
+      status: String(row.status) as ProviderAuthorization["status"],
+      authorizedBy: String(row.authorized_by),
+      authorizedAt: String(row.authorized_at),
+      expiresAt: row.expires_at ? String(row.expires_at) : null,
+    };
   }
 
   recordPolicyDecision(input: {
@@ -1689,6 +2054,21 @@ export class OutreachRepository {
       modelName: env.OLLAMA_MODEL,
       workerImage: env.JUNGLEGRID_DEFAULT_IMAGE,
       dryRun: env.DRY_RUN,
+      maximumConcurrentSources: 8,
+      maximumConcurrentEnrichments: 12,
+      discoveryDeadlineSeconds: 180,
+      sourceQueryBudget: 3,
+      sourceCandidateBudget: 24,
+      preliminaryTargetMultiplier: 3,
+      minimumDistinctSources: 1,
+      sourceCacheTtlSeconds: 900,
+      maximumEvidencePerSource: 25,
+      maximumProspectsPerEntity: 1,
+      proofMinimumScore: env.FIT_SCORE_THRESHOLD,
+      browserAutomationEnabled: false,
+      browserAllowedDomains: [],
+      screenshotRetentionDays: 7,
+      dataRetentionDays: env.DATA_RETENTION_DAYS,
       defaultAllowedOutreachUrl: env.DEFAULT_ALLOWED_OUTREACH_URL,
     };
     const rows = this.db.prepare("SELECT key, value FROM settings").all() as Array<{
@@ -1713,6 +2093,120 @@ export class OutreachRepository {
     transaction();
     this.audit("operator", "settings.updated", "settings", null, "success");
     return settings;
+  }
+
+  getBusinessProfile(): BusinessProfile | null {
+    const row = this.db
+      .prepare("SELECT * FROM business_profile ORDER BY updated_at DESC LIMIT 1")
+      .get() as Record<string, unknown> | undefined;
+    return row ? mapBusinessProfile(row) : null;
+  }
+
+  saveBusinessProfile(input: BusinessProfileInput): BusinessProfile {
+    const profile = businessProfileInputSchema.parse(input);
+    const existing = this.getBusinessProfile();
+    const id = existing?.id ?? randomUUID();
+    const createdAt = existing?.createdAt ?? now();
+    const updatedAt = now();
+    this.db
+      .prepare(
+        `INSERT INTO business_profile (
+          id, company_name, website, description, archetype, offer_name,
+          offer_description, offer_url, sender_name, sender_email, signature,
+          target_market_summary, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          company_name = excluded.company_name,
+          website = excluded.website,
+          description = excluded.description,
+          archetype = excluded.archetype,
+          offer_name = excluded.offer_name,
+          offer_description = excluded.offer_description,
+          offer_url = excluded.offer_url,
+          sender_name = excluded.sender_name,
+          sender_email = excluded.sender_email,
+          signature = excluded.signature,
+          target_market_summary = excluded.target_market_summary,
+          updated_at = excluded.updated_at`,
+      )
+      .run(
+        id,
+        profile.companyName,
+        profile.website,
+        profile.description,
+        profile.archetype,
+        profile.offerName,
+        profile.offerDescription,
+        profile.offerUrl,
+        profile.senderName,
+        profile.senderEmail ?? null,
+        profile.signature,
+        profile.targetMarketSummary,
+        createdAt,
+        updatedAt,
+      );
+    this.audit("operator", "business_profile.saved", "business_profile", id, "success");
+    return this.getBusinessProfile()!;
+  }
+
+  listCampaigns(): CampaignRecord[] {
+    return (
+      this.db
+        .prepare("SELECT * FROM campaigns ORDER BY updated_at DESC")
+        .all() as Record<string, unknown>[]
+    ).map(mapCampaignRecord);
+  }
+
+  getCampaign(campaignId: string): CampaignRecord | null {
+    const row = this.db
+      .prepare("SELECT * FROM campaigns WHERE campaign_id = ?")
+      .get(campaignId) as Record<string, unknown> | undefined;
+    return row ? mapCampaignRecord(row) : null;
+  }
+
+  saveCampaign(input: CampaignConfiguration, source: CampaignRecord["source"] = "saved"): CampaignRecord {
+    const campaign = campaignConfigurationSchema.parse(input);
+    const existing = this.getCampaign(campaign.campaignId);
+    const id = existing?.id ?? randomUUID();
+    const createdAt = existing?.createdAt ?? now();
+    const updatedAt = now();
+    const archetype =
+      campaign.channels.includes("business_phone") || campaign.channels.includes("booking_link")
+        ? "local_services"
+        : campaign.channels.includes("linkedin_profile") || campaign.channels.includes("linkedin_company")
+          ? "agency_services"
+          : "software";
+    this.db
+      .prepare(
+        `INSERT INTO campaigns (
+          id, campaign_id, name, active, archetype, source, config_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(campaign_id) DO UPDATE SET
+          name = excluded.name,
+          active = excluded.active,
+          archetype = excluded.archetype,
+          source = excluded.source,
+          config_json = excluded.config_json,
+          updated_at = excluded.updated_at`,
+      )
+      .run(
+        id,
+        campaign.campaignId,
+        campaign.name,
+        campaign.active ? 1 : 0,
+        archetype,
+        source,
+        JSON.stringify(campaign),
+        createdAt,
+        updatedAt,
+      );
+    this.audit("operator", "campaign.saved", "campaign", campaign.campaignId, "success");
+    return this.getCampaign(campaign.campaignId)!;
+  }
+
+  deleteCampaign(campaignId: string): void {
+    this.db.prepare("DELETE FROM campaigns WHERE campaign_id = ?").run(campaignId);
+    this.audit("operator", "campaign.deleted", "campaign", campaignId, "success");
   }
 
   dashboardSummary(): Record<string, unknown> {

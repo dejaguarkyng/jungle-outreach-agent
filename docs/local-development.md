@@ -22,6 +22,17 @@ Campaign execution cannot: every `runOutreach` mode requires
 `JUNGLEGRID_API_KEY`. The legacy `local-template` mode name is mapped to a
 Jungle Grid Qwen workload so old clients cannot bypass the required backend.
 
+## First-run operator flow
+
+After `npm run dev`:
+
+1. Open `Settings` and save the business profile.
+2. Import suppressions if you have an existing do-not-contact list.
+3. Open `Campaigns` and create a saved campaign from a preset.
+4. Open `Prospects` and import CSV or JSON seed rows if you already have lead lists.
+5. Add provider credentials and browser authorization only for the channels you intend to use.
+6. Start a manual run from `/run`.
+
 Run the worker directly:
 
 ```bash

@@ -1,8 +1,8 @@
 # Campaign Configuration
 
-Campaign files live in `config/campaigns/*.json`. They define what the system
-researches; they do not change where AI work executes. Every campaign is
-submitted through the same Jungle Grid client.
+OpenLine now treats saved database-backed campaigns as the primary operator
+workflow. File-backed campaigns in `config/campaigns/*.json` remain template
+examples and fallback defaults for a fresh clone.
 
 Each file uses schema version `1.0` and contains:
 
@@ -20,9 +20,15 @@ Each file uses schema version `1.0` and contains:
 targets SaaS release diagnostics and does not inherit AI, GPU, agent, or Jungle
 Grid prospect criteria.
 
-Create a campaign by copying one of these files, changing `campaignId`, and
-editing the configuration. No application source changes are required. The
-manual-run screen discovers valid campaign files automatically.
+Recommended flow:
+
+1. create a business profile in the `Settings` screen;
+2. open the `Campaigns` page;
+3. create a campaign from an archetype preset;
+4. refine the full persisted JSON contract in the editor;
+5. use the saved campaign from the manual-run screen.
+
+Saved campaigns override file templates with the same `campaignId`.
 
 The worker receives the selected configuration in the versioned Jungle Grid
 job contract. The contract also declares pipeline stages, evidence rules,

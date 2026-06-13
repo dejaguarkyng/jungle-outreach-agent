@@ -51,9 +51,10 @@ function provider(options: {
       { artifact_id: "a1", filename: "prospects.json" },
       { artifact_id: "a2", filename: "research_notes.json" },
       { artifact_id: "a3", filename: "scored_prospects.json" },
-      { artifact_id: "a4", filename: "email_drafts.json" },
-      { artifact_id: "a5", filename: "run_summary.json" },
-      { artifact_id: "a6", filename: "validation_report.json" },
+      { artifact_id: "a4", filename: "proof_artifacts.json" },
+      { artifact_id: "a5", filename: "message_drafts.json" },
+      { artifact_id: "a6", filename: "run_summary.json" },
+      { artifact_id: "a7", filename: "validation_report.json" },
     ]),
     downloadArtifactBundle: vi.fn().mockImplementation(async () => {
       if (artifactFailures > 0) {

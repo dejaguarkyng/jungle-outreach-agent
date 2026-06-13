@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Activity,
+  BriefcaseBusiness,
   MessagesSquare,
   LayoutDashboard,
   Mail,
@@ -17,6 +18,7 @@ import { cn } from "@/src/lib/utils";
 
 const nav = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/campaigns", label: "Campaigns", icon: BriefcaseBusiness },
   { href: "/prospects", label: "Prospects", icon: Users },
   { href: "/research", label: "Research review", icon: Search },
   { href: "/drafts", label: "Drafts", icon: Mail },

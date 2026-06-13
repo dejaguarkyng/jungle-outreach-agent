@@ -1,4 +1,5 @@
 import { PageHeader } from "@/components/page-header";
+import { ProspectImportCard } from "@/components/prospect-import-card";
 import { ProspectsTable } from "@/components/prospects-table";
 import { OutreachRepository } from "@/src/db/repository";
 
@@ -12,7 +13,8 @@ export default function ProspectsPage() {
         title="Prospects"
         description="Deduplicated public professional contacts with source provenance."
       />
-      <div className="p-5 lg:p-8">
+      <div className="space-y-5 p-5 lg:p-8">
+        <ProspectImportCard />
         <ProspectsTable prospects={prospects} />
       </div>
     </>

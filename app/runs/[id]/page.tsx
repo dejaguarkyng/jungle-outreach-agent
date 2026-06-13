@@ -13,6 +13,40 @@ export default async function RunDetailPage({ params }: { params: Promise<{ id: 
   const { id } = await params;
   const detail = new OutreachRepository().getRunDetail(id);
   if (!detail) notFound();
+  const runSummary = detail.run.runSummary;
+  const sourceMetrics = Object.entries(runSummary?.source_metrics ?? {}).sort(
+    (left, right) =>
+      right[1].prospects - left[1].prospects ||
+      right[1].evidence_items - left[1].evidence_items ||
+      right[1].candidates - left[1].candidates,
+  );
+  const stageDurations = Object.entries(runSummary?.stage_durations_ms ?? {}).sort(
+    (left, right) => right[1] - left[1],
+  );
+  const totalStageDuration = stageDurations.reduce((sum, [, duration]) => sum + duration, 0);
+  const sourceHealthCounts = sourceMetrics.reduce<Record<string, number>>((counts, [, metrics]) => {
+    counts[metrics.status] = (counts[metrics.status] ?? 0) + 1;
+    return counts;
+  }, {});
+  const timeoutReasons = sourceMetrics
+    .filter(([, metrics]) => metrics.timeout_reason)
+    .map(([source, metrics]) => ({ source, reason: metrics.timeout_reason! }));
+  const degradedSignals = (runSummary?.source_signals ?? []).filter(
+    (signal) =>
+      signal.status && signal.status !== "summary" && signal.status !== "healthy" && signal.status !== "productive",
+  );
+  const productiveSignals = (runSummary?.source_signals ?? [])
+    .filter((signal) => signal.evidence_count && signal.evidence_count > 0)
+    .sort((left, right) => (right.evidence_count ?? 0) - (left.evidence_count ?? 0))
+    .slice(0, 8);
+  const conversionStats = [
+    ["Discovered", runSummary?.discovered ?? detail.prospects.length],
+    ["Qualified", runSummary?.qualified ?? detail.prospects.length],
+    ["Excluded", runSummary?.excluded ?? detail.run.failedCount],
+    ["Drafted", runSummary?.drafted ?? detail.run.draftedCount],
+  ] as const;
+  const qualityMetrics = runSummary?.quality_metrics;
+
   return (
     <>
       <PageHeader
@@ -38,6 +72,183 @@ export default async function RunDetailPage({ params }: { params: Promise<{ id: 
             </Card>
           ))}
         </section>
+        {runSummary ? (
+          <section className="space-y-5">
+            <div className="grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
+              <Card className="p-5">
+                <h2 className="text-sm font-semibold">Source contribution</h2>
+                <div className="mt-4 grid gap-3">
+                  {sourceMetrics.map(([source, metrics]) => {
+                    const cacheRate = percentage(metrics.cache_hits, metrics.requests);
+                    const candidateConversion = percentage(metrics.prospects, metrics.candidates);
+                    const evidencePerProspect =
+                      metrics.prospects > 0
+                        ? (metrics.evidence_items / metrics.prospects).toFixed(1)
+                        : "0.0";
+                    return (
+                      <div key={source} className="rounded-md border bg-black/20 p-3 text-xs">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="font-medium">{source}</span>
+                          <Badge tone={toneForHealth(metrics.status)}>{metrics.status}</Badge>
+                        </div>
+                        <div className="mt-3 grid gap-2 text-muted-foreground sm:grid-cols-2 xl:grid-cols-4">
+                          <span>{metrics.queries} queries</span>
+                          <span>{metrics.requests} requests</span>
+                          <span>{metrics.candidates} candidates</span>
+                          <span>{metrics.prospects} prospects</span>
+                          <span>{metrics.evidence_items} evidence items</span>
+                          <span>{cacheRate}% cache hit rate</span>
+                          <span>{candidateConversion}% candidate conversion</span>
+                          <span>{evidencePerProspect} evidence/prospect</span>
+                        </div>
+                        <p className="mt-2 text-muted-foreground">{metrics.duration_ms}ms total source time</p>
+                        {metrics.timeout_reason ? (
+                          <p className="mt-1 text-amber-200">{metrics.timeout_reason}</p>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                  {sourceMetrics.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No source metrics recorded.</p>
+                  ) : null}
+                </div>
+              </Card>
+              <div className="space-y-5">
+                <Card className="p-5">
+                  <h2 className="text-sm font-semibold">Conversion and quality</h2>
+                  <div className="mt-4 grid grid-cols-2 gap-3">
+                    {conversionStats.map(([label, value]) => (
+                      <div key={label} className="rounded-md border bg-black/20 p-3">
+                        <p className="text-xs text-muted-foreground">{label}</p>
+                        <p className="mt-1 text-xl font-semibold">{value}</p>
+                      </div>
+                    ))}
+                  </div>
+                  {qualityMetrics ? (
+                    <div className="mt-4 space-y-2 text-xs text-muted-foreground">
+                      <MetricRow
+                        label="Qualification pass rate"
+                        value={`${roundMetric(qualityMetrics.qualification_gate_pass_rate * 100)}%`}
+                      />
+                      <MetricRow
+                        label="Fallback rate"
+                        value={`${roundMetric(qualityMetrics.fallback_rate * 100)}%`}
+                      />
+                      <MetricRow
+                        label="Evidence-backed scoring"
+                        value={`${roundMetric(qualityMetrics.scored_criteria_with_evidence_ids_percentage)}%`}
+                      />
+                      <MetricRow
+                        label="Duplicate collapse count"
+                        value={String(qualityMetrics.duplicate_collapse_count)}
+                      />
+                      <MetricRow
+                        label="Contamination rejection rate"
+                        value={
+                          qualityMetrics.contamination_rejection_rate === null
+                            ? "n/a"
+                            : `${roundMetric(qualityMetrics.contamination_rejection_rate * 100)}%`
+                        }
+                      />
+                    </div>
+                  ) : null}
+                </Card>
+                <Card className="p-5">
+                  <h2 className="text-sm font-semibold">Source health</h2>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {Object.entries(sourceHealthCounts).map(([status, count]) => (
+                      <Badge key={status} tone={toneForHealth(status)}>
+                        {status} · {count}
+                      </Badge>
+                    ))}
+                    {Object.keys(sourceHealthCounts).length === 0 ? (
+                      <span className="text-sm text-muted-foreground">No health summary recorded.</span>
+                    ) : null}
+                  </div>
+                  {timeoutReasons.length > 0 ? (
+                    <div className="mt-4 space-y-2">
+                      {timeoutReasons.map((item) => (
+                        <div
+                          key={`${item.source}-${item.reason}`}
+                          className="rounded-md border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100"
+                        >
+                          <span className="font-medium">{item.source}</span>: {item.reason}
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </Card>
+              </div>
+            </div>
+            <div className="grid gap-5 xl:grid-cols-[0.85fr_1.15fr]">
+              <Card className="p-5">
+                <h2 className="text-sm font-semibold">Stage durations</h2>
+                <div className="mt-4 space-y-2">
+                  {stageDurations.map(([stage, duration]) => (
+                    <div
+                      key={stage}
+                      className="rounded-md border bg-black/20 px-3 py-2 text-xs"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <span>{stage.replaceAll("_", " ")}</span>
+                        <span className="font-mono">{duration}ms</span>
+                      </div>
+                      <p className="mt-1 text-muted-foreground">
+                        {percentage(duration, totalStageDuration)}% of recorded pipeline time
+                      </p>
+                    </div>
+                  ))}
+                  {stageDurations.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No stage timing recorded.</p>
+                  ) : null}
+                </div>
+              </Card>
+              <Card className="p-5">
+                <h2 className="text-sm font-semibold">Source signals</h2>
+                <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                  <div>
+                    <p className="text-xs font-medium text-muted-foreground">Top productive records</p>
+                    <div className="mt-2 space-y-2">
+                      {productiveSignals.map((signal) => (
+                        <div key={`${signal.source_type}-${signal.source_id ?? signal.url}`} className="rounded-md border bg-black/20 p-3 text-xs">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-medium">{signal.source_type}</span>
+                            <span>{signal.evidence_count} evidence</span>
+                          </div>
+                          <p className="mt-1 truncate text-muted-foreground">{signal.title ?? signal.url ?? signal.source_id}</p>
+                        </div>
+                      ))}
+                      {productiveSignals.length === 0 ? (
+                        <p className="text-sm text-muted-foreground">No productive source records recorded.</p>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div>
+                    <p className="text-xs font-medium text-muted-foreground">Degraded and timeout events</p>
+                    <div className="mt-2 space-y-2">
+                      {degradedSignals.map((signal, index) => (
+                        <div key={`${signal.source_type}-${signal.error ?? signal.status}-${index}`} className="rounded-md border bg-black/20 p-3 text-xs">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-medium">{signal.source_type}</span>
+                            <Badge tone={signal.status === "timeout" ? "amber" : "red"}>
+                              {signal.status ?? "degraded"}
+                            </Badge>
+                          </div>
+                          <p className="mt-1 text-muted-foreground">
+                            {signal.error ?? signal.timeout_reason ?? "No additional detail"}
+                          </p>
+                        </div>
+                      ))}
+                      {degradedSignals.length === 0 ? (
+                        <p className="text-sm text-muted-foreground">No degraded source events recorded.</p>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              </Card>
+            </div>
+          </section>
+        ) : null}
         {detail.run.junglegridJobId ? (
           <Card className="space-y-3 p-5">
             <div>
@@ -125,5 +336,30 @@ export default async function RunDetailPage({ params }: { params: Promise<{ id: 
         </Card>
       </div>
     </>
+  );
+}
+
+function percentage(value: number, total: number): number {
+  if (!total) return 0;
+  return Math.round((value / total) * 100);
+}
+
+function roundMetric(value: number): string {
+  return value.toFixed(value >= 10 ? 0 : 1);
+}
+
+function toneForHealth(status: string): "green" | "amber" | "red" | "neutral" {
+  if (status === "productive" || status === "healthy") return "green";
+  if (status === "empty" || status === "timeout") return "amber";
+  if (status === "failed" || status === "degraded") return "red";
+  return "neutral";
+}
+
+function MetricRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-md border bg-black/20 px-3 py-2">
+      <span>{label}</span>
+      <span className="font-mono text-foreground">{value}</span>
+    </div>
   );
 }

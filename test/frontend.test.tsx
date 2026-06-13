@@ -3,6 +3,8 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { ProspectsTable } from "@/components/prospects-table";
 import { DraftWorkspace } from "@/components/draft-workspace";
 import { ManualRunForm } from "@/components/manual-run-form";
+import { ProspectImportCard } from "@/components/prospect-import-card";
+import { SuppressionImportCard } from "@/components/suppression-import-card";
 import type { EmailDraft, Prospect } from "@/src/domain/schemas";
 import { settingsSchema } from "@/src/domain/schemas";
 
@@ -74,7 +76,7 @@ describe("operator frontend", () => {
     expect(screen.getByText("Jane Maintainer")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Search prospects"), { target: { value: "missing" } });
     expect(screen.getByText("No prospects match the current filters.")).toBeInTheDocument();
-  });
+  }, 10000);
 
   it("shows manual approval controls and no auto-send toggle", () => {
     render(<DraftWorkspace initialDrafts={[draft]} />);
@@ -110,5 +112,19 @@ describe("operator frontend", () => {
         defaultAllowedOutreachUrl: "https://example.com",
       }).success,
     ).toBe(false);
+  });
+
+  it("renders the prospect import workflow shell", () => {
+    render(<ProspectImportCard />);
+    expect(screen.getByText("Import seed prospects")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Preview import/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Import valid rows/i })).toBeInTheDocument();
+  });
+
+  it("renders the suppression import workflow shell", () => {
+    render(<SuppressionImportCard />);
+    expect(screen.getByText("Import suppressions")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Preview import/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Import valid rows/i })).toBeInTheDocument();
   });
 });

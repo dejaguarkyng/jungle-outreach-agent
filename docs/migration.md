@@ -1,14 +1,16 @@
 # Schema Migration
 
-Artifact schema version `2.0` adds canonical entities, structured evidence,
-contact provenance, semantic validation statuses, campaign metadata, quality
-metrics, and execution reporting.
+Artifact schema version `3.0` uses seven schema-versioned artifacts,
+channel-neutral messages, standalone proofs, dynamic scoring, and source
+performance metrics.
 
 The application migration keeps legacy rows and evolves them in place:
 
 - legacy prospect email fields remain as compatibility fields;
 - legacy emails are backfilled into `contact_points`;
 - legacy email drafts become outbound messages in durable conversations;
+- legacy approval state, provider IDs, validation state, and timestamps are
+  preserved;
 - proof-of-value artifacts attach to existing prospect and run records;
 - inbound opt-outs close the conversation, disable the contact point, and add
   an immediate suppression.
@@ -28,9 +30,17 @@ Compatibility behavior:
 - SQLite migrations add `contact_points`, `proof_artifacts`, `conversations`,
   `messages`, `conversation_jobs`, and `policy_decisions`, then backfill legacy
   rows.
+- the first v3 startup creates and verifies a
+  `*.pre-v3-<timestamp>.sqlite` backup before mutation;
+- `schema_migrations` records completion and migration failures block startup;
+- historical v2 rows remain readable, but new worker artifacts must use
+  `schema_version: "3.0"`.
 - the `jungle-grid-leads` command remains, but legacy stage names now submit the
   unified managed pipeline instead of maintaining a second local data model.
 
 New consumers should use campaign metadata, `score_dimension_labels`,
 structured evidence IDs, and semantic validation statuses rather than deriving
 meaning from historical field names.
+
+To restore, stop the application, replace `DATABASE_URL` with the verified
+pre-v3 backup, and restart. The migration is idempotent and runs again.

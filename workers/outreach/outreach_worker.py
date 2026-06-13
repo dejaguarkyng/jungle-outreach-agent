@@ -14,12 +14,14 @@ import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from html import unescape
 from pathlib import Path
@@ -33,6 +35,7 @@ try:
         DiscoveryQuery,
         ProspectSourceAdapter,
         SourceCandidate,
+        SourceCandidateEnvelope,
         SourceHealth,
         build_default_registry,
     )
@@ -42,6 +45,7 @@ except ModuleNotFoundError:  # pragma: no cover - supports direct script executi
         DiscoveryQuery,
         ProspectSourceAdapter,
         SourceCandidate,
+        SourceCandidateEnvelope,
         SourceHealth,
         build_default_registry,
     )
@@ -172,6 +176,8 @@ logging.basicConfig(
 )
 LOG = logging.getLogger("outreach-worker")
 OLLAMA_PROCESS: subprocess.Popen[Any] | None = None
+REPOSITORY_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+REPOSITORY_CACHE_LOCK = threading.Lock()
 CAMPAIGN: dict[str, Any] = {
     "schemaVersion": "1.0",
     "workspaceId": "default",
@@ -327,8 +333,8 @@ def configure_campaign(input_path: Path | None) -> dict[str, Any]:
             contract = json.loads(contract_raw)
         except json.JSONDecodeError as error:
             raise ValueError("OUTREACH_JOB_CONTRACT must contain valid JSON.") from error
-        if contract.get("schema_version") != "1.0":
-            raise ValueError("Jungle Grid job contract must use schema_version 1.0.")
+        if contract.get("schema_version") != "3.0":
+            raise ValueError("Jungle Grid job contract must use schema_version 3.0.")
         payload = contract.get("campaign_configuration")
     elif input_path and input_path.exists():
         source = json.loads(input_path.read_text(encoding="utf-8"))
@@ -444,6 +450,81 @@ def is_operational_pain_statement(value: str) -> bool:
 
 def unique_preserve_order(values: list[str]) -> list[str]:
     return list(dict.fromkeys([value for value in values if value]))
+
+
+def unique_evidence(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    unique: dict[str, dict[str, Any]] = {}
+    for item in items:
+        if isinstance(item, dict) and item.get("evidence_id"):
+            unique[str(item["evidence_id"])] = item
+    return list(unique.values())
+
+
+def campaign_contact_points(prospect: dict[str, Any]) -> list[dict[str, Any]]:
+    allowed = set(CAMPAIGN.get("channels", ["email"]))
+    return [
+        item
+        for item in prospect.get("contact_points", [])
+        if isinstance(item, dict)
+        and item.get("type") in allowed
+        and item.get("publicly_listed")
+        and float(item.get("confidence", 0)) >= 0.5
+    ]
+
+
+def primary_campaign_contact(prospect: dict[str, Any]) -> dict[str, Any] | None:
+    priorities = {
+        "email": 100,
+        "github_discussions": 90,
+        "official_contact_form": 85,
+        "partnership_form": 80,
+        "integration_form": 80,
+        "booking_link": 75,
+        "github_issue": 70,
+        "linkedin_profile": 60,
+        "linkedin_company": 60,
+        "discord": 55,
+        "slack": 55,
+        "x": 50,
+        "facebook_page": 50,
+        "instagram_business": 50,
+        "whatsapp_business": 50,
+        "business_phone": 45,
+        "marketplace_form": 40,
+        "community_forum": 40,
+        "feature_request_portal": 35,
+        "github_profile": 30,
+    }
+    contacts = campaign_contact_points(prospect)
+    return max(
+        contacts,
+        key=lambda item: (
+            priorities.get(str(item.get("type")), 0),
+            float(item.get("confidence", 0)),
+        ),
+        default=None,
+    )
+
+
+def contact_content_type(contact_type: str) -> str:
+    if contact_type == "email":
+        return "email"
+    if contact_type == "github_discussions":
+        return "discussion"
+    if contact_type == "github_issue":
+        return "issue"
+    if contact_type in {
+        "official_contact_form",
+        "integration_form",
+        "partnership_form",
+        "marketplace_form",
+        "feature_request_portal",
+        "booking_link",
+    }:
+        return "form"
+    if contact_type in {"business_phone", "whatsapp_business"}:
+        return "phone_script"
+    return "direct_message"
 
 
 def contact_quality(email: str, source_type: str, context: str) -> int:
@@ -795,7 +876,14 @@ def structured_evidence_for_prospect(
     evidence_points: list[str],
     pain_signals: list[str],
 ) -> list[dict[str, Any]]:
-    evidence: list[dict[str, Any]] = []
+    evidence: list[dict[str, Any]] = [
+        {
+            **item,
+            "entity_id": prospect.get("entity_id", item.get("entity_id", "")),
+        }
+        for item in prospect.get("source_evidence", [])
+        if isinstance(item, dict) and item.get("evidence_id") and item.get("clean")
+    ]
     primary_url = prospect.get("project_url") or prospect.get("email_source_url")
     source_type = "github_repository" if "github.com" in primary_url else "official_website"
     workload_claim_type = "ai_workload" if CAMPAIGN.get("campaignId") == "jungle-grid" else "target_workload"
@@ -997,7 +1085,7 @@ def normalize_prospect(raw: dict[str, Any]) -> dict[str, Any] | None:
         ]
     return {
         "prospect_id": str(raw.get("prospect_id") or uuid.uuid4()),
-        "schema_version": "2.0",
+        "schema_version": "3.0",
         "entity_id": str(raw.get("entity_id") or f"project:{normalize_name(project).replace(' ', '-')}"),
         "name": str(raw.get("name") or project.split("/")[-1]).strip(),
         "email": email,
@@ -1821,7 +1909,7 @@ def qualification_diagnostics(prospect: dict[str, Any]) -> dict[str, Any]:
         excluded_rule = "missing_campaign_pain_signal"
     elif updated_days is None or updated_days > maximum_age:
         excluded_rule = "stale_project"
-    elif not prospect.get("contact_points"):
+    elif not campaign_contact_points(prospect):
         excluded_rule = "missing_public_contact_point"
 
     if not evidence_points:
@@ -1992,18 +2080,82 @@ def candidate_official_urls(candidate: SourceCandidate) -> list[str]:
     return list(dict.fromkeys(urls))
 
 
-def prospect_from_source_candidate(
-    adapter: ProspectSourceAdapter,
+def source_candidate_envelope(
     candidate: SourceCandidate,
-    category: str | None,
-    seen_projects: set[str],
-) -> dict[str, Any] | None:
-    repo = candidate_repository(candidate)
-    if repo:
-        owner, repo_name = repo
-        full_name = f"{owner}/{repo_name}".lower()
-        if full_name in seen_projects:
-            return None
+    documents: list[Any],
+    evidence: list[Any],
+) -> SourceCandidateEnvelope:
+    repository = candidate_repository(candidate)
+    repository_url = (
+        f"https://github.com/{repository[0]}/{repository[1]}" if repository else None
+    )
+    official_urls = candidate_official_urls(candidate)
+    official_domain = next(
+        (
+            urllib.parse.urlparse(url).hostname
+            for url in official_urls
+            if urllib.parse.urlparse(url).hostname
+            and "github.com" not in str(urllib.parse.urlparse(url).hostname)
+        ),
+        None,
+    )
+    package_identity = (
+        f"{candidate.source_type}:{candidate.source_id.split(':', 1)[-1]}"
+        if candidate.source_type in {"npm", "pypi", "docker_hub", "huggingface"}
+        else None
+    )
+    verified_owner = str(
+        candidate.metadata.get("owner")
+        or candidate.metadata.get("author")
+        or candidate.metadata.get("namespace")
+        or ""
+    ) or (repository[0] if repository else None)
+    entities: list[dict[str, Any]] = []
+    if repository_url:
+        entities.append(
+            {
+                "entity_type": "repository",
+                "canonical_id": repository_url.lower(),
+                "url": repository_url,
+            }
+        )
+    if official_domain:
+        entities.append(
+            {
+                "entity_type": "domain",
+                "canonical_id": official_domain.lower(),
+                "url": f"https://{official_domain}",
+            }
+        )
+    if package_identity:
+        entities.append(
+            {
+                "entity_type": "package",
+                "canonical_id": package_identity.lower(),
+                "url": candidate.url,
+            }
+        )
+    return SourceCandidateEnvelope(
+        candidate=candidate,
+        source_attribution=(candidate.source_type,),
+        resolved_entities=tuple(entities),
+        contacts=(),
+        documents=tuple(documents),
+        evidence=tuple(evidence),
+        canonical_repository=repository_url,
+        official_domain=official_domain,
+        package_identity=package_identity,
+        verified_owner=verified_owner,
+    )
+
+
+def cached_github_repository(owner: str, repo_name: str) -> dict[str, Any] | None:
+    key = f"{owner}/{repo_name}".lower()
+    ttl = int(CAMPAIGN.get("discovery", {}).get("cacheTtlSeconds", 900))
+    with REPOSITORY_CACHE_LOCK:
+        cached = REPOSITORY_CACHE.get(key)
+        if cached and cached[0] > time.monotonic():
+            return cached[1]
         try:
             payload = request_json(
                 f"https://api.github.com/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo_name)}",
@@ -2011,10 +2163,65 @@ def prospect_from_source_candidate(
             )
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
             return None
+        REPOSITORY_CACHE[key] = (time.monotonic() + max(0, ttl), payload)
+    return payload
+
+
+def prospect_from_source_candidate(
+    adapter: ProspectSourceAdapter,
+    candidate: SourceCandidate,
+    category: str | None,
+    seen_projects: set[str],
+    source_evidence: list[Any] | None = None,
+) -> dict[str, Any] | None:
+    normalized_source_evidence = [
+        {
+            "evidence_id": item.evidence_id,
+            "entity_id": item.entity_id,
+            "claim_type": item.claim_type,
+            "claim": item.claim,
+            "source_url": item.source_url,
+            "source_type": item.source_type,
+            "source_authority": item.source_authority,
+            "published_at": item.published_at,
+            "retrieved_at": item.retrieved_at,
+            "directness": item.directness,
+            "freshness": item.freshness,
+            "independence_group": item.independence_group,
+            "content_hash": item.content_hash,
+            "clean": item.clean,
+        }
+        for item in (source_evidence or [])
+    ]
+    repo = candidate_repository(candidate)
+    if repo:
+        owner, repo_name = repo
+        full_name = f"{owner}/{repo_name}".lower()
+        if full_name in seen_projects:
+            return None
+        payload = cached_github_repository(owner, repo_name)
+        if payload is None:
+            return None
         seen_projects.add(full_name)
         prospect = repo_to_prospect(payload, category)
         if prospect:
             prospect["discovery_source"] = candidate.source_type
+            prospect["source_evidence"] = normalized_source_evidence
+            prospect["research_text"] = clean_research_text(
+                " ".join(
+                    [
+                        prospect.get("research_text", ""),
+                        " ".join(item["claim"] for item in normalized_source_evidence),
+                    ]
+                )
+            )
+            prospect["evidence_urls"] = unique_preserve_order(
+                [
+                    *prospect.get("evidence_urls", []),
+                    candidate.url,
+                    *[item["source_url"] for item in normalized_source_evidence],
+                ]
+            )
         return prospect
 
     if candidate.source_type in {"news_rss", "hackernews", "reddit", "stack_exchange", "youtube", "arxiv"}:
@@ -2046,10 +2253,12 @@ def prospect_from_source_candidate(
     if not contact_points:
         return None
     documents = adapter.fetch(candidate, DiscoveryContext(deterministic=False))
-    evidence = adapter.normalize(documents, DiscoveryContext(deterministic=False))
+    evidence = source_evidence or adapter.normalize(
+        documents, DiscoveryContext(deterministic=False)
+    )
     evidence_text = " ".join(item.claim for item in evidence) or page_text or str(candidate.metadata.get("description") or "")
     project_url = candidate.url
-    return normalize_prospect(
+    prospect = normalize_prospect(
         {
             "name": (
                 best_contact["email"].partition("@")[0].replace(".", " ").title()
@@ -2083,6 +2292,10 @@ def prospect_from_source_candidate(
             "updated_at": candidate.published_at or utc_now(),
         }
     )
+    if prospect:
+        prospect["source_evidence"] = normalized_source_evidence
+        prospect["discovery_source"] = candidate.source_type
+    return prospect
 
 
 def discover_from_adapters(
@@ -2091,8 +2304,6 @@ def discover_from_adapters(
     category: str | None,
     seen_projects: set[str],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    prospects: list[dict[str, Any]] = []
-    signals: list[dict[str, Any]] = []
     context = DiscoveryContext(deterministic=bool_env("OUTREACH_ADAPTER_FIXTURES"))
     adapters = [
         adapter
@@ -2103,19 +2314,74 @@ def discover_from_adapters(
     for pack in query_pack_order(category):
         terms.extend(pack.get("registry", [])[:2])
         terms.extend(pack.get("github", [])[:1])
-    for adapter in adapters:
-        for term in list(dict.fromkeys(terms))[:6]:
-            if len(prospects) >= target:
-                return prospects, signals
-            query = DiscoveryQuery(text=term, category=category, limit=4)
+    discovery_config = CAMPAIGN.get("discovery", {})
+    query_budget = int(discovery_config.get("queryBudgetPerSource", 3))
+    candidates_per_query = int(discovery_config.get("candidateBudgetPerQuery", 8))
+    candidates_per_source = int(discovery_config.get("candidateBudgetPerSource", 24))
+    maximum_sources = int(discovery_config.get("maximumConcurrentSources", 8))
+    maximum_enrichments = int(discovery_config.get("maximumConcurrentEnrichments", 12))
+    preliminary_limit = max(
+        target,
+        int(target * float(discovery_config.get("preliminaryTargetMultiplier", 3))),
+    )
+    deadline = time.monotonic() + int(discovery_config.get("deadlineSeconds", 180))
+    search_terms = list(dict.fromkeys(terms))[:query_budget]
+
+    def candidate_is_resolvable(candidate: SourceCandidate) -> bool:
+        metadata_text = " ".join(
+            str(candidate.metadata.get(key) or "")
+            for key in ("title", "description", "content")
+        )
+        if contamination_reasons(metadata_text):
+            return False
+        if (
+            candidate.source_type in {"npm", "pypi"}
+            and GENERIC_PACKAGE_RE.search(metadata_text)
+            and not TARGET_RE.search(metadata_text)
+        ):
+            return False
+        if candidate.source_type in {
+            "news_rss",
+            "hackernews",
+            "reddit",
+            "stack_exchange",
+            "youtube",
+            "arxiv",
+        }:
+            return bool(candidate_repository(candidate) or candidate.metadata.get("official_url"))
+        return bool(candidate_repository(candidate) or candidate_official_urls(candidate))
+
+    def discover_adapter(
+        adapter: ProspectSourceAdapter,
+    ) -> tuple[list[SourceCandidate], list[dict[str, Any]], int, int]:
+        source_started = time.monotonic()
+        source_candidates: list[SourceCandidate] = []
+        source_signals: list[dict[str, Any]] = []
+        candidate_count = 0
+        query_count = 0
+        for term in search_terms:
+            if time.monotonic() >= deadline or candidate_count >= candidates_per_source:
+                break
+            query_count += 1
+            query = DiscoveryQuery(
+                text=term,
+                category=category,
+                limit=min(candidates_per_query, candidates_per_source - candidate_count),
+            )
             try:
                 candidates = adapter.discover(query, context)
             except Exception as error:
-                signals.append({"source_type": adapter.source_type, "status": "degraded", "error": str(error)})
+                source_signals.append(
+                    {
+                        "source_type": adapter.source_type,
+                        "status": "degraded",
+                        "error": str(error),
+                    }
+                )
                 continue
             if hasattr(adapter, "drain_errors"):
                 for error in adapter.drain_errors():
-                    signals.append(
+                    source_signals.append(
                         {
                             "source_type": error.source_type,
                             "status": "degraded",
@@ -2128,42 +2394,181 @@ def discover_from_adapters(
                         }
                     )
             for candidate in candidates:
-                if len(prospects) >= target:
+                if time.monotonic() >= deadline or candidate_count >= candidates_per_source:
                     break
-                documents = adapter.fetch(candidate, context)
-                if hasattr(adapter, "drain_errors"):
-                    for error in adapter.drain_errors():
-                        signals.append(
-                            {
-                                "source_type": error.source_type,
-                                "status": "degraded",
-                                "operation": error.operation,
-                                "error_category": error.category,
-                                "error": error.message,
-                                "retryable": error.retryable,
-                                "attempt": error.attempt,
-                                "occurred_at": error.occurred_at,
-                            }
-                        )
-                evidence = adapter.normalize(documents, context)
+                candidate_count += 1
+                if candidate_is_resolvable(candidate):
+                    source_candidates.append(candidate)
+        return (
+            source_candidates,
+            source_signals,
+            query_count,
+            int((time.monotonic() - source_started) * 1000),
+        )
+
+    prospects: list[dict[str, Any]] = []
+    signals: list[dict[str, Any]] = []
+    candidates_to_enrich: list[tuple[ProspectSourceAdapter, SourceCandidate]] = []
+    source_stats: dict[str, dict[str, int]] = {}
+    with ThreadPoolExecutor(max_workers=max(1, min(maximum_sources, len(adapters)))) as executor:
+        futures = {executor.submit(discover_adapter, adapter): adapter for adapter in adapters}
+        for future in as_completed(futures):
+            adapter = futures[future]
+            try:
+                candidates, source_signals, query_count, duration_ms = future.result()
+            except Exception as error:
                 signals.append(
                     {
-                        "source_type": candidate.source_type,
-                        "source_id": candidate.source_id,
-                        "url": candidate.url,
-                        "title": candidate.title,
-                        "evidence_count": len(evidence),
-                        "repository_url": str(candidate.metadata.get("repository_url") or ""),
-                        "official_url": str(candidate.metadata.get("official_url") or ""),
-                        "independence_groups": sorted({item.independence_group for item in evidence}),
+                        "source_type": adapter.source_type,
+                        "status": "degraded",
+                        "error": str(error),
                     }
                 )
-                if not evidence:
-                    continue
-                prospect = prospect_from_source_candidate(adapter, candidate, category, seen_projects)
-                if prospect:
-                    prospects.append(prospect)
-    return prospects, signals
+                continue
+            signals.extend(source_signals)
+            candidates_to_enrich.extend((adapter, candidate) for candidate in candidates)
+            source_stats[adapter.source_type] = {
+                "queries": query_count,
+                "candidates": len(candidates),
+                "evidence_count": 0,
+                "prospects": 0,
+                "duration_ms": duration_ms,
+            }
+
+    def enrich_candidate(
+        adapter: ProspectSourceAdapter, candidate: SourceCandidate
+    ) -> tuple[SourceCandidateEnvelope, dict[str, Any] | None]:
+        if time.monotonic() >= deadline:
+            return source_candidate_envelope(candidate, [], []), None
+        documents = adapter.fetch(candidate, context)
+        evidence = adapter.normalize(documents, context)
+        envelope = source_candidate_envelope(candidate, documents, evidence)
+        prospect = (
+            prospect_from_source_candidate(adapter, candidate, category, set(), evidence)
+            if evidence
+            else None
+        )
+        return envelope, prospect
+
+    with ThreadPoolExecutor(max_workers=max(1, maximum_enrichments)) as executor:
+        futures = {
+            executor.submit(enrich_candidate, adapter, candidate): (adapter, candidate)
+            for adapter, candidate in candidates_to_enrich
+        }
+        for future in as_completed(futures):
+            adapter, candidate = futures[future]
+            if time.monotonic() >= deadline:
+                signals.append(
+                    {
+                        "source_type": adapter.source_type,
+                        "status": "timeout",
+                        "error": "discovery_deadline_exceeded",
+                    }
+                )
+                break
+            try:
+                envelope, prospect = future.result()
+            except Exception as error:
+                signals.append(
+                    {
+                        "source_type": adapter.source_type,
+                        "status": "degraded",
+                        "error": str(error),
+                    }
+                )
+                continue
+            stats = source_stats[adapter.source_type]
+            stats["evidence_count"] += len(envelope.evidence)
+            signals.append(
+                {
+                    "source_type": candidate.source_type,
+                    "source_id": candidate.source_id,
+                    "url": candidate.url,
+                    "title": candidate.title,
+                    "evidence_count": len(envelope.evidence),
+                    "repository_url": envelope.canonical_repository or "",
+                    "official_url": (
+                        f"https://{envelope.official_domain}"
+                        if envelope.official_domain
+                        else ""
+                    ),
+                    "package_identity": envelope.package_identity or "",
+                    "verified_owner": envelope.verified_owner or "",
+                    "independence_groups": sorted(
+                        {item.independence_group for item in envelope.evidence}
+                    ),
+                }
+            )
+            if not prospect:
+                continue
+            stats["prospects"] += 1
+            project_key = prospect["project"].strip().lower()
+            existing = next(
+                (
+                    item
+                    for item in prospects
+                    if item["project"].strip().lower() == project_key
+                ),
+                None,
+            )
+            if existing:
+                existing["source_evidence"] = unique_evidence(
+                    [
+                        *existing.get("source_evidence", []),
+                        *prospect.get("source_evidence", []),
+                    ]
+                )
+                existing["evidence_urls"] = unique_preserve_order(
+                    [*existing.get("evidence_urls", []), *prospect.get("evidence_urls", [])]
+                )
+                existing["contributing_sources"] = unique_preserve_order(
+                    [
+                        *existing.get("contributing_sources", []),
+                        candidate.source_type,
+                    ]
+                )
+                continue
+            prospect["contributing_sources"] = [candidate.source_type]
+            seen_projects.add(project_key)
+            prospects.append(prospect)
+            if len(prospects) >= preliminary_limit:
+                break
+
+    for adapter in adapters:
+        stats = source_stats.get(
+            adapter.source_type,
+            {
+                "queries": 0,
+                "candidates": 0,
+                "evidence_count": 0,
+                "prospects": 0,
+                "duration_ms": 0,
+            },
+        )
+        adapter_metrics = adapter.metrics() if hasattr(adapter, "metrics") else {}
+        health_status = (
+            "timeout"
+            if time.monotonic() >= deadline
+            else "productive"
+            if stats["prospects"] > 0
+            else "healthy"
+            if stats["evidence_count"] > 0
+            else "empty"
+        )
+        signals.append(
+            {
+                "source_type": adapter.source_type,
+                "status": "summary",
+                "health_status": health_status,
+                "timeout_reason": (
+                    "discovery_deadline_exceeded" if health_status == "timeout" else ""
+                ),
+                **stats,
+                "cache_hits": int(adapter_metrics.get("cache_hits", 0)),
+                "requests": int(adapter_metrics.get("requests", 0)),
+            }
+        )
+    return prospects[:target], signals
 
 
 def discover(
@@ -2239,17 +2644,6 @@ def discover(
             diagnostics["excluded"] = False
             diagnostics["skip_reason"] = ""
             diagnostics["exclusion_rule_triggered"] = ""
-        if not diagnostics["excluded"] and not email:
-            diagnostics.update(
-                {
-                    "excluded": True,
-                    "skip_reason": "alternate_channel_only",
-                    "exclusion_rule_triggered": "alternate_channel_only",
-                    "missing_evidence": unique_preserve_order(
-                        [*diagnostics["missing_evidence"], "verified public email contact"]
-                    ),
-                }
-            )
         if diagnostics["excluded"]:
             skipped.append(
                 {
@@ -2360,7 +2754,33 @@ def research(prospects: list[dict[str, Any]]) -> list[dict[str, Any]]:
         graph = canonical_entity_graph(prospect, structured_evidence)
         prospect.update(graph)
         summary_parts = evidence_points[:2]
-        strength = max(0.0, min(1.0, float(diagnostics.get("contact_quality", 0)) / 10 * 0.15 + 0.25 + 0.25 * len(evidence_points) + (0.15 if diagnostics.get("small_team_context") else 0) + (0.2 if not diagnostics.get("stale") else 0)))
+        independent_groups: dict[str, float] = {}
+        for item in structured_evidence:
+            group = str(item.get("independence_group") or item.get("source_url") or "")
+            if not group:
+                continue
+            directness_weight = {
+                "direct": 1.0,
+                "strong_inference": 0.75,
+                "weak_inference": 0.4,
+            }.get(str(item.get("directness")), 0.4)
+            value = (
+                float(item.get("source_authority", 0))
+                * float(item.get("freshness", 0))
+                * directness_weight
+            )
+            independent_groups[group] = max(independent_groups.get(group, 0), value)
+        group_strength = (
+            sum(independent_groups.values()) / len(independent_groups)
+            if independent_groups
+            else 0
+        )
+        diversity_bonus = min(0.15, max(0, len(independent_groups) - 1) * 0.08)
+        contact_strength = float(diagnostics.get("contact_quality", 0)) / 10 * 0.1
+        strength = max(
+            0.0,
+            min(1.0, group_strength * 0.75 + diversity_bonus + contact_strength),
+        )
         notes.append(
             {
                 "prospect_id": prospect["prospect_id"],
@@ -2386,6 +2806,85 @@ def research(prospects: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
         )
     return notes
+
+
+def configured_score_dimensions() -> list[dict[str, Any]]:
+    configured = (CAMPAIGN.get("scoring") or {}).get("dimensions")
+    if configured:
+        return list(configured)
+    return [
+        {"key": "agentMcpRelevance", "maximumScore": 20, "acceptedClaimTypes": ["ai_workload", "target_workload", "product_fit"], "minimumIndependentEvidence": 1},
+        {"key": "aiWorkloadRelevance", "maximumScore": 20, "acceptedClaimTypes": ["ai_workload", "target_workload"], "minimumIndependentEvidence": 1},
+        {"key": "infrastructurePain", "maximumScore": 20, "acceptedClaimTypes": ["infrastructure_pain"], "minimumIndependentEvidence": 1},
+        {"key": "openSourceActivity", "maximumScore": 15, "acceptedClaimTypes": ["activity"], "minimumIndependentEvidence": 1},
+        {"key": "jungleGridComprehension", "maximumScore": 15, "acceptedClaimTypes": ["integration_surface", "product_fit"], "minimumIndependentEvidence": 1},
+        {"key": "contactQuality", "maximumScore": 10, "acceptedClaimTypes": ["contact"], "minimumIndependentEvidence": 1},
+    ]
+
+
+def score_evidence_map(note: dict[str, Any]) -> dict[str, list[str]]:
+    evidence_items = note.get("evidence", [])
+    result: dict[str, list[str]] = {}
+    for dimension in configured_score_dimensions():
+        result[str(dimension["key"])] = [
+            item["evidence_id"]
+            for item in evidence_items
+            if evidence_matches_dimension(item, dimension)
+        ][:3]
+    return result
+
+
+def evidence_matches_dimension(
+    item: dict[str, Any], dimension: dict[str, Any]
+) -> bool:
+    accepted = set(dimension.get("acceptedClaimTypes", []))
+    directness = set(
+        dimension.get("acceptedDirectness", ["direct", "strong_inference"])
+    )
+    return bool(
+        item.get("clean")
+        and item.get("claim_type") in accepted
+        and float(item.get("source_authority", 0))
+        >= float(dimension.get("minimumSourceAuthority", 0.5))
+        and float(item.get("freshness", 0))
+        >= float(dimension.get("minimumFreshness", 0))
+        and item.get("directness") in directness
+    )
+
+
+def dimension_required_signals_present(
+    matching: list[dict[str, Any]], dimension: dict[str, Any]
+) -> bool:
+    combined = " ".join(
+        f"{item.get('claim_type', '')} {item.get('claim', '')}".lower()
+        for item in matching
+    )
+    return all(
+        str(signal).lower() in combined
+        for signal in dimension.get("requiredSignals", [])
+    )
+
+
+def legacy_score_projection(
+    prospect: dict[str, Any], note: dict[str, Any]
+) -> dict[str, int]:
+    evidence = note.get("evidence", [])
+    claim_types = Counter(str(item.get("claim_type")) for item in evidence if item.get("clean"))
+    diagnostics = prospect.get("diagnostics", {})
+    return {
+        "agentMcpRelevance": min(
+            20, 10 * (claim_types["ai_workload"] + claim_types["target_workload"])
+        ),
+        "aiWorkloadRelevance": min(
+            20, 10 * (claim_types["ai_workload"] + claim_types["target_workload"])
+        ),
+        "infrastructurePain": min(20, 10 * claim_types["infrastructure_pain"]),
+        "openSourceActivity": min(15, 15 * int(claim_types["activity"] > 0)),
+        "jungleGridComprehension": min(
+            15, 8 * (claim_types["integration_surface"] + claim_types["product_fit"])
+        ),
+        "contactQuality": min(10, int(diagnostics.get("contact_quality", 0))),
+    }
 
 
 def score_breakdown(prospect: dict[str, Any], note: dict[str, Any]) -> dict[str, int]:
@@ -2441,7 +2940,7 @@ def score_breakdown(prospect: dict[str, Any], note: dict[str, Any]) -> dict[str,
         if len(workload_evidence) >= 2 and integration_evidence
         else (8 if workload_evidence and integration_evidence else 0)
     )
-    return {
+    legacy = {
         "agentMcpRelevance": min(20, agent),
         "aiWorkloadRelevance": min(20, workload),
         "infrastructurePain": min(20, infrastructure),
@@ -2449,6 +2948,31 @@ def score_breakdown(prospect: dict[str, Any], note: dict[str, Any]) -> dict[str,
         "jungleGridComprehension": min(15, comprehension),
         "contactQuality": min(10, contact) if contact_evidence else 0,
     }
+    if not (CAMPAIGN.get("scoring") or {}).get("dimensions"):
+        return legacy
+    result: dict[str, int] = {}
+    for dimension in configured_score_dimensions():
+        key = str(dimension["key"])
+        maximum = int(dimension["maximumScore"])
+        accepted = set(dimension.get("acceptedClaimTypes", []))
+        matching = [
+            item
+            for item in evidence_items
+            if evidence_matches_dimension(item, dimension)
+        ]
+        independent = len(
+            {item.get("independence_group") for item in matching if item.get("independence_group")}
+        )
+        minimum = max(1, int(dimension.get("minimumIndependentEvidence", 1)))
+        if independent < minimum or not dimension_required_signals_present(
+            matching, dimension
+        ):
+            result[key] = 0
+            continue
+        coverage = min(1.0, independent / max(minimum, 2))
+        authority = max((float(item.get("source_authority", 0)) for item in matching), default=0)
+        result[key] = min(maximum, round(maximum * max(coverage, authority)))
+    return result
 
 
 def score(prospects: list[dict[str, Any]], notes: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2457,17 +2981,24 @@ def score(prospects: list[dict[str, Any]], notes: list[dict[str, Any]]) -> list[
     for prospect in prospects:
         note = by_id[prospect["prospect_id"]]
         breakdown = score_breakdown(prospect, note)
+        legacy_breakdown = legacy_score_projection(prospect, note)
         public = {key: value for key, value in prospect.items() if key not in {"research_text", "evidence_urls", "stars", "active"}}
         diagnostics = prospect.get("diagnostics", {})
         evidence_points = note.get("evidence_points", [])
         evidence_items = note.get("evidence", [])
         concrete_pain_signal = (note.get("pain_signals") or evidence_points or [prospect["project_description"]])[0]
-        fit_score = sum(breakdown.values())
-        independent_evidence_count = max(0, min(3, len(evidence_points)))
+        fit_score = min(100, sum(breakdown.values()))
+        independent_evidence_count = len(
+            {
+                item.get("independence_group")
+                for item in evidence_items
+                if item.get("clean") and item.get("independence_group")
+            }
+        )
         if independent_evidence_count <= 1:
             fit_score = min(fit_score, 50)
         elif independent_evidence_count == 2:
-            fit_score = min(fit_score, 70)
+            fit_score = min(fit_score, 85)
         if fit_score >= 90 and (
             len(evidence_points) < 3
             or not diagnostics.get("has_direct_ai_workload")
@@ -2475,33 +3006,32 @@ def score(prospects: list[dict[str, Any]], notes: list[dict[str, Any]]) -> list[
             or diagnostics.get("contact_quality", 0) < 8
         ):
             fit_score = 89
+        required_dimensions_missing = [
+            str(dimension["key"])
+            for dimension in configured_score_dimensions()
+            if dimension.get("required") and breakdown.get(str(dimension["key"]), 0) <= 0
+        ]
+        source_types = {
+            str(item.get("source_type"))
+            for item in evidence_items
+            if item.get("clean") and item.get("source_type")
+        }
+        minimum_sources = int(
+            CAMPAIGN.get("sourceDiversity", {}).get(
+                "minimumDistinctSources",
+                CAMPAIGN.get("discovery", {}).get("minimumDistinctSources", 1),
+            )
+        )
+        diversity_failed = len(source_types) < minimum_sources
         rows.append(
             {
                 **public,
                 "fit_score": fit_score,
                 "score_breakdown": breakdown,
+                "legacy_score_breakdown": legacy_breakdown,
                 "evidence_strength": note["evidence_strength"],
                 "evidence": evidence_items,
-                "score_evidence_ids": {
-                    "agentMcpRelevance": [
-                        item["evidence_id"] for item in evidence_items if item.get("claim_type") in {"ai_workload", "target_workload", "product_fit", "integration_surface"}
-                    ][:3],
-                    "aiWorkloadRelevance": [
-                        item["evidence_id"] for item in evidence_items if item.get("claim_type") in {"ai_workload", "target_workload"}
-                    ][:3],
-                    "infrastructurePain": [
-                        item["evidence_id"] for item in evidence_items if item.get("claim_type") == "infrastructure_pain"
-                    ][:3],
-                    "openSourceActivity": [
-                        item["evidence_id"] for item in evidence_items if item.get("claim_type") == "activity"
-                    ][:2],
-                    "jungleGridComprehension": [
-                        item["evidence_id"] for item in evidence_items if item.get("claim_type") == "integration_surface"
-                    ][:2],
-                    "contactQuality": [
-                        item["evidence_id"] for item in evidence_items if item.get("claim_type") == "contact"
-                    ][:2],
-                },
+                "score_evidence_ids": score_evidence_map(note),
                 "contact_quality": diagnostics.get("contact_quality", 0),
                 "evidence_points": evidence_points,
                 "why_this_person": clip_words(
@@ -2523,36 +3053,17 @@ def score(prospects: list[dict[str, Any]], notes: list[dict[str, Any]]) -> list[
                     30,
                 ),
                 "outreach_priority": "high" if fit_score >= 85 else ("medium" if fit_score >= 75 else "low"),
-                "excluded": False,
+                "excluded": bool(required_dimensions_missing or diversity_failed),
+                "exclusion_reasons": [
+                    *[
+                        f"required_score_dimension_missing:{key}"
+                        for key in required_dimensions_missing
+                    ],
+                    *(["source_diversity_requirement_failed"] if diversity_failed else []),
+                ],
                 "junglegrid_job_id": os.getenv(
                     "JUNGLEGRID_JOB_ID", "fixture-job"
                 ),
-                "proof_artifacts": [
-                    {
-                        "type": CAMPAIGN.get("proofOfValue", {}).get(
-                            "strategy", "implementation_plan"
-                        ),
-                        "title": (
-                            f"{CAMPAIGN['offer']['name']} proof of value for "
-                            f"{prospect['project']}"
-                        ),
-                        "content": (
-                            f"Validate the evidenced need for {prospect['project']}, "
-                            f"connect {CAMPAIGN['offer']['name']} to the current workflow, "
-                            "run a bounded pilot, and compare reliability, delivery time, "
-                            "and operating cost."
-                        ),
-                        "uri": None,
-                        "evidence_ids": [
-                            item["evidence_id"]
-                            for item in evidence_items
-                            if item.get("evidence_id")
-                        ],
-                        "junglegrid_job_id": os.getenv(
-                            "JUNGLEGRID_JOB_ID", "fixture-job"
-                        ),
-                    }
-                ],
             }
         )
     return rows
@@ -3329,23 +3840,51 @@ def build_draft_candidate(
     claims: list[str],
     model_mode: str,
 ) -> dict[str, Any]:
+    contact = primary_campaign_contact(prospect)
+    if contact is None:
+        raise ValueError("Prospect has no campaign-allowed contact point.")
+    contact_type = str(contact["type"])
+    browser_types = {
+        "official_contact_form",
+        "integration_form",
+        "partnership_form",
+        "marketplace_form",
+        "feature_request_portal",
+        "booking_link",
+    }
+    delivery = CAMPAIGN.get("delivery", {})
+    if contact_type == "email":
+        capability = "available"
+    elif contact_type in browser_types and delivery.get("browserAutomationEnabled"):
+        hostname = urllib.parse.urlparse(str(contact["value"])).hostname or ""
+        allowed = set(delivery.get("allowedBrowserDomains", []))
+        capability = "manual_delivery" if hostname in allowed else "blocked_configuration"
+    else:
+        capability = "blocked_configuration"
+    evidence_ids = [
+        item["evidence_id"]
+        for item in note.get("evidence", [])
+        if item.get("evidence_id") and item.get("clean")
+    ]
     return {
         "prospect_id": prospect["prospect_id"],
-        "name": prospect["name"],
-        "email": prospect["email"],
-        "email_source_url": prospect["email_source_url"],
-        "project": prospect["project"],
-        "category": prospect["category"],
+        "contact_point": contact,
+        "channel": contact_type,
+        "content_type": contact_content_type(contact_type),
         "fit_score": prospect["fit_score"],
-        "subject": subject,
+        "subject": subject if contact_type == "email" else None,
         "body": body,
         "word_count": word_count(body),
         "links": [link.rstrip(".,;:!?") for link in URL_RE.findall(f"{subject}\n{body}")],
         "evidence_urls": note["evidence_urls"],
         "personalization_claims": claims,
+        "evidence_ids": unique_preserve_order(evidence_ids),
         "model_mode": model_mode,
+        "delivery_capability": capability,
+        "approval_status": "approval_required",
         "validation_status": "manual_review_required" if model_mode == "fallback" else "send_ready",
         "validation_errors": [],
+        "junglegrid_job_id": os.getenv("JUNGLEGRID_JOB_ID", "fixture-job"),
     }
 
 
@@ -3355,10 +3894,16 @@ def validate_draft(draft: dict[str, Any], max_per_domain: int, domains: Counter[
     evidence_text = " ".join([body, *draft.get("personalization_claims", [])])
     links = [link.rstrip(".,;:!?") for link in URL_RE.findall(f"{draft['subject']}\n{body}")]
     count = word_count(body)
-    domain = draft["email"].split("@")[-1].lower()
+    contact = draft["contact_point"]
+    contact_type = str(contact["type"])
+    domain = (
+        str(contact["value"]).split("@")[-1].lower()
+        if contact_type == "email"
+        else (urllib.parse.urlparse(str(contact["value"])).hostname or contact_type)
+    )
     if count < MIN_WORDS or count > MAX_WORDS:
         errors.append(f"body must contain {MIN_WORDS}-{MAX_WORDS} words; found {count}")
-    if len(draft["subject"]) > MAX_SUBJECT:
+    if draft["subject"] and len(draft["subject"]) > MAX_SUBJECT:
         errors.append("subject must be under 80 characters")
     if links != ALLOWED_LINKS:
         errors.append(f"draft must contain exactly one link: {SITE}")
@@ -3366,10 +3911,10 @@ def validate_draft(draft: dict[str, Any], max_per_domain: int, domains: Counter[
         errors.append("tracking and HTML are not allowed")
     if re.search(r"\battachment\b", body, re.I):
         errors.append("attachments are not allowed")
-    if not draft["email_source_url"]:
-        errors.append("email source URL is required")
-    if draft["email_source_url"] not in draft["evidence_urls"]:
-        errors.append("email source URL must be included in evidence URLs")
+    if not contact.get("source_url"):
+        errors.append("contact source URL is required")
+    if contact["source_url"] not in draft["evidence_urls"]:
+        errors.append("contact source URL must be included in evidence URLs")
     if not draft["personalization_claims"]:
         errors.append("at least one evidence-bound personalization claim is required")
     if draft.get("model_mode") == "fallback":
@@ -3394,11 +3939,8 @@ def validate_draft(draft: dict[str, Any], max_per_domain: int, domains: Counter[
         errors.append("draft proposes replacing infrastructure the prospect already owns")
     if re.search(r"\bi noticed you are using gpus?\b", body, re.I) and "gpu" not in " ".join(draft["personalization_claims"]).lower():
         errors.append("GPU claims must be evidence-backed")
-    project_terms = [
-        term for term in re.split(r"[^a-z0-9]+", draft["project"].lower()) if len(term) >= 3
-    ]
-    if not any(term in body.lower() for term in project_terms):
-        errors.append("body must mention the evidenced project")
+    if not draft.get("evidence_ids"):
+        errors.append("at least one evidence ID is required")
     if domains[domain] >= max_per_domain:
         errors.append(f"domain {domain} exceeds the cap of {max_per_domain}")
     return errors
@@ -3444,14 +3986,15 @@ def write_drafts(
         metrics["fallback_reason"] = "qwen_or_ollama_unavailable"
         LOG.warning("Qwen/Ollama unavailable; falling back to template mode.")
 
-    seen_emails: set[str] = set()
+    seen_contacts: set[tuple[str, str]] = set()
     for prospect in scored:
         note = by_id[prospect["prospect_id"]]
-        if not prospect.get("email"):
+        contact = primary_campaign_contact(prospect)
+        if contact is None:
             failures.append(
                 {
                     "prospect_id": prospect["prospect_id"],
-                    "errors": ["no email contact point; qualified for another channel"],
+                    "errors": ["no campaign-allowed contact point"],
                 }
             )
             continue
@@ -3469,11 +4012,12 @@ def write_drafts(
                 }
             )
             continue
-        if is_generic_contact_email(prospect["email"]):
+        if contact["type"] == "email" and is_generic_contact_email(str(contact["value"])):
             failures.append({"prospect_id": prospect["prospect_id"], "errors": ["generic support inbox is not allowed"]})
             continue
-        if prospect["email"].lower() in seen_emails:
-            failures.append({"prospect_id": prospect["prospect_id"], "errors": ["duplicate email"]})
+        contact_key = (str(contact["type"]), str(contact["value"]).strip().lower())
+        if contact_key in seen_contacts:
+            failures.append({"prospect_id": prospect["prospect_id"], "errors": ["duplicate contact point"]})
             continue
         generated = None
         model_mode = "template"
@@ -3517,8 +4061,13 @@ def write_drafts(
         if errors:
             failures.append({"prospect_id": prospect["prospect_id"], "errors": errors})
             continue
-        domains[prospect["email"].split("@")[-1].lower()] += 1
-        seen_emails.add(prospect["email"].lower())
+        contact_domain = (
+            str(contact["value"]).split("@")[-1].lower()
+            if contact["type"] == "email"
+            else (urllib.parse.urlparse(str(contact["value"])).hostname or str(contact["type"]))
+        )
+        domains[contact_domain] += 1
+        seen_contacts.add(contact_key)
         if draft["model_mode"] == "qwen":
             metrics["primary_generated"] += 1
         elif draft["model_mode"] == "fallback":
@@ -3526,6 +4075,109 @@ def write_drafts(
         passed.append(draft)
     metrics["latency_ms"] = int((time.monotonic() - started) * 1000)
     return passed, failures, fallback_used, metrics
+
+
+def generate_proof_artifacts(
+    scored: list[dict[str, Any]], notes: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    notes_by_id = {note["prospect_id"]: note for note in notes}
+    proof_policy = CAMPAIGN.get("proofOfValue", {})
+    artifact_type = str(
+        (proof_policy.get("artifactTypes") or [proof_policy.get("strategy") or "implementation_plan"])[0]
+    )
+    threshold = int(
+        proof_policy.get(
+            "minimumScore", os.getenv("FIT_SCORE_THRESHOLD", "70")
+        )
+    )
+    artifacts: list[dict[str, Any]] = []
+    for prospect in scored:
+        if prospect.get("excluded") or int(prospect.get("fit_score", 0)) < threshold:
+            continue
+        note = notes_by_id[prospect["prospect_id"]]
+        evidence = [item for item in note.get("evidence", []) if item.get("clean")]
+        evidence_ids = unique_preserve_order(
+            [str(item["evidence_id"]) for item in evidence if item.get("evidence_id")]
+        )
+        if not evidence_ids:
+            continue
+        claim = clip_words(str(evidence[0]["claim"]), 30)
+        citations = " ".join(f"[{evidence_id}]" for evidence_id in evidence_ids)
+        project = prospect["project"]
+        offer = CAMPAIGN["offer"]["name"]
+        templates = {
+            "technical_integration_proposal": (
+                f"Evidence: {claim} [{evidence_ids[0]}]\n\n"
+                f"Integration proposal for {project}: connect {offer} at the documented "
+                "execution boundary, preserve the existing control plane, and run one bounded "
+                f"workload with retries, logs, and artifacts. Sources: {citations}"
+            ),
+            "repository_patch": (
+                f"Patch target for {project}: the repository evidence identifies {claim} "
+                f"[{evidence_ids[0]}]. Add a minimal provider adapter, configuration example, "
+                f"and regression test without changing public defaults. Sources: {citations}"
+            ),
+            "website_audit": (
+                f"Website audit for {project}: the public material states {claim} "
+                f"[{evidence_ids[0]}]. Clarify the execution boundary, operational guarantees, "
+                f"and next evaluation step for {offer}. Sources: {citations}"
+            ),
+            "market_opportunity_report": (
+                f"Opportunity evidence for {project}: {claim} [{evidence_ids[0]}]. "
+                f"Validate demand for {offer} with a bounded technical evaluation and compare "
+                f"reliability, lead time, and operating cost. Sources: {citations}"
+            ),
+            "workflow_recommendation": (
+                f"Workflow recommendation for {project}: based on {claim} "
+                f"[{evidence_ids[0]}], isolate durable execution behind a provider boundary, "
+                f"retain current orchestration, and measure retries and artifact recovery. Sources: {citations}"
+            ),
+            "implementation_plan": (
+                f"Implementation plan for {project}: use the evidenced workflow {claim} "
+                f"[{evidence_ids[0]}] as the baseline, integrate {offer} behind one adapter, "
+                f"run a pilot, and compare reliability and delivery time. Sources: {citations}"
+            ),
+            "cost_estimate": (
+                f"Cost-estimate basis for {project}: {claim} [{evidence_ids[0]}]. "
+                "Capture current workload duration, retry rate, operator time, and capacity cost; "
+                f"then compare the same bounded workload on {offer}. Sources: {citations}"
+            ),
+            "comparison_report": (
+                f"Comparison plan for {project}: the current evidence is {claim} "
+                f"[{evidence_ids[0]}]. Compare the existing path with {offer} on startup time, "
+                f"completion rate, retries, observability, and artifact retention. Sources: {citations}"
+            ),
+            "reputation_review": (
+                f"Public reputation review for {project}: {claim} [{evidence_ids[0]}]. "
+                "Separate first-party documentation from independent mentions, identify repeated "
+                f"operational themes, and avoid treating syndicated claims as independent. Sources: {citations}"
+            ),
+        }
+        content = templates.get(
+            artifact_type,
+            (
+                f"Custom proof for {project}: {claim} [{evidence_ids[0]}]. "
+                f"Evaluate {offer} against this specific evidenced workflow. Sources: {citations}"
+            ),
+        )
+        if project.lower() not in content.lower() or any(
+            evidence_id not in content for evidence_id in evidence_ids
+        ):
+            continue
+        if len(set(re.findall(r"\b[a-z0-9]{4,}\b", content.lower()))) < 12:
+            continue
+        artifacts.append(
+            {
+                "prospect_id": prospect["prospect_id"],
+                "type": artifact_type,
+                "title": f"{CAMPAIGN['offer']['name']} proof of value for {prospect['project']}",
+                "content": content,
+                "uri": None,
+                "evidence_ids": evidence_ids,
+                "junglegrid_job_id": os.getenv("JUNGLEGRID_JOB_ID", "fixture-job"),
+            }
+        )
+    return artifacts
 
 
 def health_counts(statuses: list[SourceHealth]) -> tuple[list[str], list[str], list[str], list[str]]:
@@ -3552,12 +4204,19 @@ def write_json(output: Path, name: str, value: Any) -> None:
     temporary.replace(output / name)
 
 
+def write_artifact_items(output: Path, name: str, items: list[dict[str, Any]]) -> None:
+    write_json(output, name, {"schema_version": "3.0", "items": items})
+
+
 def run(args: argparse.Namespace) -> int:
     try:
         if args.health_check:
             print("ok")
             return 0
         started = utc_now()
+        run_started = time.monotonic()
+        stage_started = run_started
+        stage_durations_ms: dict[str, int] = {}
         output = Path(args.output)
         input_path = Path(args.input) if args.input else None
         campaign = configure_campaign(input_path)
@@ -3566,6 +4225,7 @@ def run(args: argparse.Namespace) -> int:
         registry = build_default_registry(source_registry_config())
         sources_enabled, sources_succeeded, sources_degraded, sources_failed = health_counts(registry.health())
         prospects, skipped, adapter_signals = discover(args.target, input_path, args.category, registry)
+        stage_durations_ms["source_discovery"] = int((time.monotonic() - stage_started) * 1000)
         _, sources_succeeded, sources_degraded, sources_failed = health_counts(registry.health())
         use_qwen = args.job in {"write-emails-qwen", "full-run-qwen"}
         model = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
@@ -3585,7 +4245,9 @@ def run(args: argparse.Namespace) -> int:
             "validation_succeeded": False,
             "failure_reason": "",
         }
+        stage_started = time.monotonic()
         notes = research(prospects)
+        stage_durations_ms["prospect_research"] = int((time.monotonic() - stage_started) * 1000)
         if use_qwen:
             semantic_ready = (
                 os.getenv("USE_LOCAL_LLM", "true").lower() == "true" and ensure_ollama(model)
@@ -3628,7 +4290,12 @@ def run(args: argparse.Namespace) -> int:
                         raise RuntimeError(f"Semantic analysis failed: {error}") from error
                     semantic_degraded = True
                     semantic_metrics["failure_reason"] = str(error)
+        stage_started = time.monotonic()
         scored = score(prospects, notes)
+        stage_durations_ms["prospect_scoring"] = int((time.monotonic() - stage_started) * 1000)
+        stage_started = time.monotonic()
+        proof_artifacts = generate_proof_artifacts(scored, notes)
+        stage_durations_ms["proof_generation"] = int((time.monotonic() - stage_started) * 1000)
         drafts: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
         fallback_used = False
@@ -3654,6 +4321,7 @@ def run(args: argparse.Namespace) -> int:
                 use_qwen,
                 semantic_ready if use_qwen else None,
             )
+        stage_durations_ms["outreach_drafting"] = int((time.monotonic() - stage_started) * 1000)
         qwen_drafts = [draft for draft in drafts if draft.get("model_mode") == "qwen"]
         if use_qwen and semantic_ready and qwen_drafts:
             semantic_metrics["validation_attempted"] = True
@@ -3754,7 +4422,28 @@ def run(args: argparse.Namespace) -> int:
         }
         execution_backend = os.getenv("OUTREACH_EXECUTION_BACKEND", "jungle_grid_mock")
         contract = json.loads(os.getenv("OUTREACH_JOB_CONTRACT", "{}") or "{}")
+        source_metrics: dict[str, dict[str, int]] = {}
+        for signal in adapter_signals:
+            if signal.get("status") != "summary":
+                continue
+            source_metrics[str(signal["source_type"])] = {
+                "queries": int(signal.get("queries", 0)),
+                "candidates": int(signal.get("candidates", 0)),
+                "evidence_items": int(signal.get("evidence_count", 0)),
+                "prospects": int(signal.get("prospects", 0)),
+                "qualified": int(signal.get("prospects", 0)),
+                "cache_hits": int(signal.get("cache_hits", 0)),
+                "requests": int(signal.get("requests", signal.get("queries", 0))),
+                "duration_ms": int(signal.get("duration_ms", 0)),
+                "status": str(signal.get("health_status", "empty")),
+                **(
+                    {"timeout_reason": str(signal["timeout_reason"])}
+                    if signal.get("timeout_reason")
+                    else {}
+                ),
+            }
         summary = {
+            "schema_version": "3.0",
             "status": run_status,
             "job": args.job,
             "mode": mode,
@@ -3768,7 +4457,7 @@ def run(args: argparse.Namespace) -> int:
                 "JUNGLEGRID_JOB_ID", "fixture-job"
             ),
             "production_eligible": execution_backend == "jungle_grid",
-            "job_contract_schema_version": contract.get("schema_version", "1.0"),
+            "job_contract_schema_version": contract.get("schema_version", "3.0"),
             "pipeline_stages": contract.get(
                 "pipeline_stages",
                 [
@@ -3777,6 +4466,7 @@ def run(args: argparse.Namespace) -> int:
                     "semantic_qualification",
                     "entity_resolution",
                     "prospect_scoring",
+                    "proof_generation",
                     "outreach_drafting",
                     "semantic_validation",
                 ],
@@ -3796,6 +4486,8 @@ def run(args: argparse.Namespace) -> int:
             "exclusion_reasons": dict(exclusion_reasons),
             "quality_metrics": quality_metrics,
             "source_signals": adapter_signals[:100],
+            "source_metrics": source_metrics,
+            "stage_durations_ms": stage_durations_ms,
             "discovered_raw": len(prospects) + len(skipped),
             "deduplicated_entities": len(canonical_entity_ids) or len(prospects),
             "canonical_relationships": canonical_relationship_count,
@@ -3824,6 +4516,7 @@ def run(args: argparse.Namespace) -> int:
         }
         status_counts = Counter(draft.get("validation_status", "manual_review_required") for draft in drafts)
         report = {
+            "schema_version": "3.0",
             "valid": True,
             "checked": len(drafts) + len(failures),
             "passed": int(status_counts.get("send_ready", 0)),
@@ -3835,10 +4528,11 @@ def run(args: argparse.Namespace) -> int:
             "errors": failures,
             "skipped_prospects": skipped,
         }
-        write_json(output, "prospects.json", public_prospects)
-        write_json(output, "research_notes.json", notes)
-        write_json(output, "scored_prospects.json", scored)
-        write_json(output, "email_drafts.json", drafts)
+        write_artifact_items(output, "prospects.json", public_prospects)
+        write_artifact_items(output, "research_notes.json", notes)
+        write_artifact_items(output, "scored_prospects.json", scored)
+        write_artifact_items(output, "proof_artifacts.json", proof_artifacts)
+        write_artifact_items(output, "message_drafts.json", drafts)
         write_json(output, "run_summary.json", summary)
         write_json(output, "validation_report.json", report)
         LOG.info("Wrote %s validated drafts and %s validation failures.", len(drafts), len(failures))

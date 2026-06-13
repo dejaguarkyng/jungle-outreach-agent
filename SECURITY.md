@@ -17,6 +17,13 @@ review. Email `security@junglegrid.dev` with reproduction steps and impact.
 - Worker inputs contain public professional evidence only.
 - Artifact validation fails closed.
 - ZeptoMail sending is disabled by default and requires explicit manual approval.
+- Every first-touch message requires operator approval regardless of autonomy.
+- Browser sessions use AES-256-GCM encryption through
+  `OPENLINE_SESSION_ENCRYPTION_KEY` and never enter Jungle Grid jobs or logs.
+- Browser delivery requires a domain allowlist and active operator
+  authorization, and aborts on CAPTCHA, 2FA, expiry, warnings, permission
+  changes, or unknown form structure.
+- Redacted delivery screenshots expire after seven days by default.
 - Suppression and blocklist checks run before any provider request.
 - No tracking, attachments, guessed emails, or hidden contact sources are allowed.
 

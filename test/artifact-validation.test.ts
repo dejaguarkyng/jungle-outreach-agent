@@ -3,9 +3,9 @@ import {
   validateArtifactBundle,
 } from "@/src/services/artifact-ingestion";
 import {
-  validateEmailDraftArtifact,
+  validateMessageDraftArtifact,
   type ArtifactBundle,
-  type ArtifactEmailDraft,
+  type ArtifactMessageDraft,
 } from "@/packages/shared/src";
 
 const body = `Hi Avery,
@@ -35,14 +35,19 @@ const evidence = {
   clean: true,
 };
 
-function draft(overrides: Partial<ArtifactEmailDraft> = {}): ArtifactEmailDraft {
+function draft(overrides: Partial<ArtifactMessageDraft> = {}): ArtifactMessageDraft {
   return {
     prospect_id: "p1",
-    name: "Avery",
-    email: "avery@agent-runtime.dev",
-    email_source_url: "https://agent-runtime.dev/contact",
-    project: "sample/agent-runtime",
-    category: "agent_compute",
+    contact_point: {
+      type: "email",
+      value: "avery@agent-runtime.dev",
+      source_url: "https://agent-runtime.dev/contact",
+      publicly_listed: true,
+      authorized: false,
+      confidence: 0.9,
+    },
+    channel: "email",
+    content_type: "email",
     fit_score: 92,
     subject: "Jungle Grid and agent-runtime",
     body,
@@ -53,18 +58,24 @@ function draft(overrides: Partial<ArtifactEmailDraft> = {}): ArtifactEmailDraft 
       "https://github.com/sample/agent-runtime#readme",
     ],
     personalization_claims: ["the durable worker queue preserves logs and output artifacts"],
+    evidence_ids: ["ev-runtime"],
     model_mode: "qwen",
+    delivery_capability: "available",
+    approval_status: "approval_required",
     validation_status: "send_ready",
     validation_errors: [],
+    junglegrid_job_id: "job-1",
     ...overrides,
   };
 }
 
-function bundle(emailDrafts = [draft()]): ArtifactBundle {
+function bundle(messageDrafts = [draft()]): ArtifactBundle {
   return {
+    schema_version: "3.0",
     prospects: [
       {
         prospect_id: "p1",
+        schema_version: "3.0",
         name: "Avery",
         email: "avery@agent-runtime.dev",
         email_source_url: "https://agent-runtime.dev/contact",
@@ -103,6 +114,7 @@ function bundle(emailDrafts = [draft()]): ArtifactBundle {
           },
         ],
         conflicting_claims: [],
+        contact_points: [draft().contact_point],
       },
     ],
     research_notes: [
@@ -127,10 +139,12 @@ function bundle(emailDrafts = [draft()]): ArtifactBundle {
     scored_prospects: [
       {
         prospect_id: "p1",
+        schema_version: "3.0",
         name: "Avery",
         email: "avery@agent-runtime.dev",
         email_source_url: "https://agent-runtime.dev/contact",
         email_source_type: "official_website",
+        contact_points: [draft().contact_point],
         project: "sample/agent-runtime",
         project_url: "https://github.com/sample/agent-runtime",
         project_description: "Durable agent jobs.",
@@ -163,8 +177,20 @@ function bundle(emailDrafts = [draft()]): ArtifactBundle {
         excluded: false,
       },
     ],
-    email_drafts: emailDrafts,
+    proof_artifacts: [
+      {
+        prospect_id: "p1",
+        type: "technical_integration_proposal",
+        title: "Jungle Grid proof of value for sample/agent-runtime",
+        content: "Evidence-bound integration proposal [ev-runtime]",
+        uri: null,
+        evidence_ids: ["ev-runtime"],
+        junglegrid_job_id: "job-1",
+      },
+    ],
+    message_drafts: messageDrafts,
     run_summary: {
+      schema_version: "3.0",
       job: "full-run-qwen",
       mode: "junglegrid-qwen",
       target: 1,
@@ -183,6 +209,7 @@ function bundle(emailDrafts = [draft()]): ArtifactBundle {
       completed_at: new Date().toISOString(),
     },
     validation_report: {
+      schema_version: "3.0",
       valid: true,
       checked: 1,
       passed: 1,
@@ -214,7 +241,6 @@ describe("worker artifact validation", () => {
       .replace("https://junglegrid.dev", "https://traceharbor.example");
     const generic = bundle([
       draft({
-        category: "developer_tool",
         subject: "Trace Harbor and agent-runtime",
         body: genericBody,
         word_count: genericBody.trim().split(/\s+/).length,
@@ -236,12 +262,12 @@ describe("worker artifact validation", () => {
       links: ["https://junglegrid.dev"],
       body: body.replace("https://junglegrid.dev", "https://invalid.test"),
     });
-    const result = validateEmailDraftArtifact([draft(), second], {
+    const result = validateMessageDraftArtifact([draft(), second], {
       fitScoreThreshold: 70,
       maxPerDomain: 1,
     });
     expect(result.valid).toBe(false);
-    expect(result.errors.join(" ")).toMatch(/Duplicate email/);
+    expect(result.errors.join(" ")).toMatch(/Duplicate contact point/);
     expect(result.errors.join(" ")).toMatch(/exceeds the cap/);
     expect(result.errors.join(" ")).toMatch(/Allowed links are|must include/);
   });

@@ -1,7 +1,7 @@
 import {
   artifactBundleSchema,
   requiredArtifactNames,
-  validateEmailDraftArtifact,
+  validateMessageDraftArtifact,
   type ArtifactBundle,
 } from "@/packages/shared/src";
 import { OutreachRepository } from "@/src/db/repository";
@@ -42,7 +42,7 @@ export function validateArtifactBundle(
           !semantic.scoring_explanation_succeeded ||
           !semantic.angle_selection_attempted ||
           !semantic.angle_selection_succeeded)) ||
-      (bundle.email_drafts.some((draft) => draft.model_mode === "qwen") &&
+      (bundle.message_drafts.some((draft) => draft.model_mode === "qwen") &&
         (!semantic.validation_attempted || !semantic.validation_succeeded))
     ) {
       throw new Error(
@@ -50,8 +50,8 @@ export function validateArtifactBundle(
       );
     }
   }
-  const fallbackDrafts = bundle.email_drafts.filter((draft) => draft.model_mode === "fallback").length;
-  const primaryDrafts = bundle.email_drafts.filter((draft) => draft.model_mode === "qwen").length;
+  const fallbackDrafts = bundle.message_drafts.filter((draft) => draft.model_mode === "fallback").length;
+  const primaryDrafts = bundle.message_drafts.filter((draft) => draft.model_mode === "qwen").length;
   if (fallbackDrafts > 0 && !bundle.run_summary.fallback_used) {
     throw new Error("Fallback drafts are present but run_summary.fallback_used is false.");
   }
@@ -75,12 +75,12 @@ export function validateArtifactBundle(
   ) {
     throw new Error("run_summary fallback_generated does not match fallback drafts.");
   }
-  const draftValidation = validateEmailDraftArtifact(bundle.email_drafts, {
+  const draftValidation = validateMessageDraftArtifact(bundle.message_drafts, {
     ...options,
     allowedLink: campaign.offer.url,
   });
   if (!draftValidation.valid) {
-    throw new Error(`Email artifact validation failed: ${draftValidation.errors.join(" ")}`);
+    throw new Error(`Message artifact validation failed: ${draftValidation.errors.join(" ")}`);
   }
 
   const prospects = new Map(bundle.prospects.map((row) => [row.prospect_id, row]));
@@ -97,7 +97,7 @@ export function validateArtifactBundle(
       }
     }
   }
-  for (const draft of bundle.email_drafts) {
+  for (const draft of bundle.message_drafts) {
     const prospect = prospects.get(draft.prospect_id);
     const note = research.get(draft.prospect_id);
     const score = scored.get(draft.prospect_id);
@@ -105,8 +105,12 @@ export function validateArtifactBundle(
       throw new Error(`Draft ${draft.prospect_id} is missing prospect, research, or score evidence.`);
     }
     if (
-      prospect.email?.toLowerCase() !== draft.email.toLowerCase() ||
-      prospect.email_source_url !== draft.email_source_url ||
+      !(prospect.contact_points ?? []).some(
+        (contact) =>
+          contact.type === draft.contact_point.type &&
+          contact.value.toLowerCase() === draft.contact_point.value.toLowerCase() &&
+          contact.source_url === draft.contact_point.source_url,
+      ) ||
       score.fit_score !== draft.fit_score
     ) {
       throw new Error(`Draft ${draft.prospect_id} does not match its source records.`);
@@ -127,8 +131,30 @@ export function validateArtifactBundle(
         }
       }
     }
-    assertPublicUrl(draft.email_source_url, "Email source URL");
+    for (const id of draft.evidence_ids) {
+      if (!evidenceIds.has(id)) {
+        throw new Error(`Draft ${draft.prospect_id} references unknown evidence ${id}.`);
+      }
+    }
+    assertPublicUrl(draft.contact_point.source_url, "Contact source URL");
     for (const url of draft.evidence_urls) assertPublicUrl(url, "Evidence URL");
+  }
+  for (const proof of bundle.proof_artifacts) {
+    if (!prospects.has(proof.prospect_id) || !scored.has(proof.prospect_id)) {
+      throw new Error(`Proof ${proof.prospect_id} is missing prospect or score evidence.`);
+    }
+    const evidenceIds = new Set([
+      ...(research.get(proof.prospect_id)?.evidence ?? []).map((item) => item.evidence_id),
+      ...(scored.get(proof.prospect_id)?.evidence ?? []).map((item) => item.evidence_id),
+    ]);
+    for (const id of proof.evidence_ids) {
+      if (!evidenceIds.has(id)) {
+        throw new Error(`Proof ${proof.prospect_id} references unknown evidence ${id}.`);
+      }
+      if (!proof.content.includes(id)) {
+        throw new Error(`Proof ${proof.prospect_id} does not cite evidence ${id} in its content.`);
+      }
+    }
   }
   return bundle;
 }
@@ -191,7 +217,9 @@ export function ingestArtifactBundle(
         confidence: contact.confidence,
       });
     }
-    for (const proof of score.proof_artifacts ?? []) {
+    for (const proof of bundle.proof_artifacts.filter(
+      (artifact) => artifact.prospect_id === source.prospect_id,
+    )) {
       repository.saveProofArtifact({
         prospectId: prospect.id,
         type: proof.type,
@@ -205,32 +233,59 @@ export function ingestArtifactBundle(
     persistedProspects.set(source.prospect_id, prospect);
   }
 
-  for (const artifactDraft of bundle.email_drafts) {
+  for (const artifactDraft of bundle.message_drafts) {
     const prospect = persistedProspects.get(artifactDraft.prospect_id);
     if (!prospect) continue;
-    const domain = artifactDraft.email.split("@")[1];
-    if (
-      repository.isBlocked(artifactDraft.email, domain) ||
-      repository.isSuppressed(artifactDraft.email, domain)
-    ) {
-      continue;
+    const contact = repository
+      .listContactPoints(prospect.id)
+      .find(
+        (item) =>
+          item.type === artifactDraft.contact_point.type &&
+          item.value.toLowerCase() === artifactDraft.contact_point.value.toLowerCase(),
+      );
+    if (!contact) continue;
+    if (artifactDraft.channel === "email") {
+      const domain = artifactDraft.contact_point.value.split("@")[1];
+      if (
+        repository.isBlocked(artifactDraft.contact_point.value, domain) ||
+        repository.isSuppressed(artifactDraft.contact_point.value, domain)
+      ) {
+        continue;
+      }
+      repository.saveDraft(prospect.id, {
+        subject: artifactDraft.subject ?? "",
+        body: artifactDraft.body,
+        wordCount: artifactDraft.word_count,
+        links: artifactDraft.links,
+        evidenceUrls: artifactDraft.evidence_urls,
+        personalizationClaims: artifactDraft.personalization_claims,
+        validationStatus: artifactDraft.validation_status,
+        validationErrors: artifactDraft.validation_errors,
+        campaignId: bundle.run_summary.campaign_id ?? "jungle-grid",
+        junglegridJobId: artifactDraft.junglegrid_job_id,
+      });
     }
-    repository.saveDraft(prospect.id, {
-      subject: artifactDraft.subject,
-      body: artifactDraft.body,
-      wordCount: artifactDraft.word_count,
-      links: artifactDraft.links,
-      evidenceUrls: artifactDraft.evidence_urls,
-      personalizationClaims: artifactDraft.personalization_claims,
-      validationStatus: artifactDraft.validation_status,
-      validationErrors: artifactDraft.validation_errors,
+    const conversation = repository.ensureConversation({
+      prospectId: prospect.id,
       campaignId: bundle.run_summary.campaign_id ?? "jungle-grid",
-      junglegridJobId: bundle.run_summary.junglegrid_job_id ?? null,
+      contactPointId: contact.id,
+      channel: artifactDraft.channel,
+    });
+    repository.addMessage({
+      conversationId: conversation.id,
+      direction: "outbound",
+      channel: artifactDraft.channel,
+      body: artifactDraft.body,
+      subject: artifactDraft.subject,
+      status: "approval_required",
+      validationStatus: artifactDraft.validation_status,
+      evidenceIds: artifactDraft.evidence_ids,
+      junglegridJobId: artifactDraft.junglegrid_job_id,
     });
     drafted += 1;
   }
 
-  const modes = new Set(bundle.email_drafts.map((draft) => draft.model_mode));
+  const modes = new Set(bundle.message_drafts.map((draft) => draft.model_mode));
   const modelMode = modes.size === 1 ? [...modes][0] : modes.has("fallback") ? "fallback" : null;
   return {
     drafted,

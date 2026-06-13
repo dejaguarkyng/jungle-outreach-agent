@@ -6,8 +6,11 @@ import {
 } from "./constants";
 import {
   artifactEmailDraftSchema,
+  artifactMessageDraftSchema,
   emailDraftsArtifactSchema,
+  messageDraftsArtifactSchema,
   type ArtifactEmailDraft,
+  type ArtifactMessageDraft,
 } from "./schemas";
 
 const urlPattern = /https?:\/\/[^\s<>"')\]]+/gi;
@@ -147,6 +150,66 @@ export function validateEmailDraftArtifact(
       errors.push(`[${index}] Fit score ${draft.fit_score} is below ${options.fitScoreThreshold}.`);
     }
     for (const error of validateArtifactDraft(draft, options)) errors.push(`[${index}] ${error}`);
+  }
+  return { valid: errors.length === 0, drafts: parsed.data, errors };
+}
+
+export function validateMessageDraftArtifact(
+  input: unknown,
+  options: { fitScoreThreshold: number; maxPerDomain: number; allowedLink?: string },
+): { valid: boolean; drafts: ArtifactMessageDraft[]; errors: string[] } {
+  const parsed = messageDraftsArtifactSchema.safeParse(input);
+  if (!parsed.success) {
+    return {
+      valid: false,
+      drafts: [],
+      errors: parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`),
+    };
+  }
+  const seenContacts = new Set<string>();
+  const destinationCounts = new Map<string, number>();
+  const errors: string[] = [];
+  for (const [index, rawDraft] of parsed.data.entries()) {
+    const draft = artifactMessageDraftSchema.parse(rawDraft);
+    const contactKey = `${draft.channel}:${draft.contact_point.value.trim().toLowerCase()}`;
+    if (seenContacts.has(contactKey)) {
+      errors.push(`[${index}] Duplicate contact point: ${contactKey}.`);
+    }
+    seenContacts.add(contactKey);
+    const destination =
+      draft.channel === "email"
+        ? draft.contact_point.value.split("@")[1]?.toLowerCase() ?? ""
+        : new URL(draft.contact_point.source_url).hostname;
+    const destinationCount = (destinationCounts.get(destination) ?? 0) + 1;
+    destinationCounts.set(destination, destinationCount);
+    if (destinationCount > options.maxPerDomain) {
+      errors.push(`[${index}] Destination ${destination} exceeds the cap of ${options.maxPerDomain}.`);
+    }
+    if (draft.fit_score < options.fitScoreThreshold) {
+      errors.push(`[${index}] Fit score ${draft.fit_score} is below ${options.fitScoreThreshold}.`);
+    }
+    if (draft.approval_status !== "approval_required") {
+      errors.push(`[${index}] Every first-touch message must require approval.`);
+    }
+    if (!draft.evidence_urls.includes(draft.contact_point.source_url)) {
+      errors.push(`[${index}] Contact source URL must be included in evidence_urls.`);
+    }
+    if (draft.evidence_ids.length === 0 || draft.personalization_claims.length === 0) {
+      errors.push(`[${index}] Evidence IDs and personalization claims are required.`);
+    }
+    const content = validateDraftContent(draft.subject ?? "", draft.body, options);
+    if (draft.word_count !== content.wordCount) {
+      errors.push(
+        `[${index}] word_count is ${draft.word_count}, but the body contains ${content.wordCount} words.`,
+      );
+    }
+    for (const error of content.errors) errors.push(`[${index}] ${error}`);
+    if (draft.model_mode === "fallback" && draft.validation_status === "send_ready") {
+      errors.push(`[${index}] Fallback drafts cannot be send_ready.`);
+    }
+    if (draft.validation_status === "send_ready" && draft.validation_errors.length > 0) {
+      errors.push(`[${index}] send_ready drafts must not contain validation errors.`);
+    }
   }
   return { valid: errors.length === 0, drafts: parsed.data, errors };
 }

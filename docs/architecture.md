@@ -16,7 +16,7 @@ the isolated Python workload.
 3. The backend estimates the workload, persists an execution record, submits
    the job, and checkpoints queued, starting, running, and terminal phases.
 4. The worker builds a source-adapter registry, records source health, discovers
-   public contacts, researches clean evidence, scores fit, and writes six files
+   public contacts, researches clean evidence, scores fit, and writes seven files
    under `/workspace/artifacts`.
 5. The backend resumes an existing persisted job after a process restart,
    polls status, retrieves artifact metadata and signed downloads,
@@ -35,16 +35,27 @@ the isolated Python workload.
 - `prospects.json`
 - `research_notes.json`
 - `scored_prospects.json`
-- `email_drafts.json`
+- `proof_artifacts.json`
+- `message_drafts.json`
 - `run_summary.json`
 - `validation_report.json`
 
-The worker has no ZeptoMail credentials. The backend never trusts worker
+The worker has no delivery credentials. The backend never trusts worker
 validation alone.
 
-Scored prospects may carry proof-of-value artifacts with evidence IDs and the
-Jungle Grid job ID that produced them. Ingestion attaches those artifacts to
-the existing prospect.
+Proof artifacts are standalone evidence-bound records. Ingestion attaches them
+to the existing prospect and preserves the Jungle Grid job ID.
+
+Delivery uses one adapter contract for capability checks, credential status,
+destination validation, normalized responses, retry classification, and audit
+metadata. Official API adapters cover ZeptoMail, GitHub, Slack, Discord, X,
+Meta messaging, WhatsApp Cloud, and Twilio. Missing credentials block only the
+affected adapter.
+
+Public forms and authorized sessions use an application-owned Playwright
+adapter. Storage state is encrypted and never enters Jungle Grid. Delivery
+requires a domain allowlist and active authorization; challenges and changed
+forms fail closed.
 
 Inbound messages append to the existing conversation through
 `POST /api/conversations/:id/inbound`. The API accepts raw inbound content,
@@ -160,8 +171,9 @@ the application does not invoke a local or external AI provider.
 Every submission carries `OUTREACH_JOB_CONTRACT`, a versioned JSON contract
 containing workspace and campaign IDs, all pipeline stages, campaign
 configuration, evidence policy, batching, concurrency, retry policy, and the
-six-file output contract. Current stages are source discovery, research,
-semantic qualification, entity resolution, scoring, drafting, and semantic
+seven-file output contract. Current stages are source discovery, research,
+semantic qualification, entity resolution, scoring, proof generation,
+drafting, and semantic
 validation. Compatible stages execute within one bounded Jungle Grid batch job;
 the backend does not create one remote job per prospect.
 

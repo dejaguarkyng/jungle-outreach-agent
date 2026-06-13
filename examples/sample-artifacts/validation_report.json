@@ -1,11 +1,50 @@
 {
+  "schema_version": "3.0",
   "valid": true,
-  "checked": 2,
-  "passed": 2,
+  "checked": 1,
+  "passed": 1,
   "failed": 0,
-  "send_ready": 2,
+  "send_ready": 1,
   "manual_review_required": 0,
   "regeneration_required": 0,
-  "excluded": 0,
-  "errors": []
+  "excluded": 1,
+  "errors": [],
+  "skipped_prospects": [
+    {
+      "prospect_id": "sample-agent-runtime",
+      "project": "sample/agent-runtime",
+      "email": "avery@agent-runtime.dev",
+      "category": "agent_compute",
+      "excluded": true,
+      "skip_reason": "missing_campaign_workload_signal",
+      "exclusion_rule_triggered": "missing_campaign_workload_signal",
+      "missing_evidence": [
+        "campaign workload signal",
+        "execution pain signal"
+      ],
+      "duplicate": false,
+      "stale": false,
+      "generic": false,
+      "irrelevant": false,
+      "generic_package": false,
+      "contamination_reasons": [],
+      "has_direct_ai_workload": false,
+      "has_campaign_target_signal": true,
+      "has_campaign_workload_signal": false,
+      "has_execution_surface": true,
+      "large_company": false,
+      "owner_key": "sample",
+      "contact_quality": 8,
+      "generic_team_email": false,
+      "updated_days": 11,
+      "evidence_points": [
+        "Agent Runtime dispatches long-running AI agent jobs to isolated workers",
+        "It preserves logs",
+        "output artifacts for review"
+      ],
+      "pain_signals": [],
+      "small_team_context": true,
+      "readme_quality": "meaningful"
+    }
+  ]
 }

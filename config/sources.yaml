@@ -11,10 +11,17 @@ sources:
     enabled: true
     access: ["public_webpage"]
     respect_robots: true
+    urls:
+      - "https://github.com/topics/ai-agents"
+      - "https://github.com/topics/inference"
   news_rss:
     enabled: true
     access: ["feed", "api", "public_webpage"]
     why_now_signal: true
+    feed_urls:
+      - "https://github.blog/feed/"
+      - "https://huggingface.co/blog/feed.xml"
+      - "https://techcrunch.com/category/artificial-intelligence/feed/"
   huggingface:
     enabled: true
     access: ["api", "public_webpage"]
@@ -58,6 +65,10 @@ sources:
   accelerators:
     enabled: true
     access: ["api", "feed", "public_webpage"]
+    urls:
+      - "https://www.ycombinator.com/companies"
+      - "https://www.techstars.com/portfolio"
+      - "https://www.seedcamp.com/our-companies/"
   open_collective:
     enabled: true
     access: ["api"]
@@ -85,6 +96,19 @@ restricted_sources:
     permissions: ["approved_api_and_commercial_permission"]
 
 queries:
+  source_templates:
+    github:
+      - "{term} language:python pushed:>{since}"
+      - "{term} topic:ai-agents"
+    registries:
+      - "{term} inference worker"
+      - "{term} agent runtime"
+    news:
+      - "{term} launch"
+      - "{term} funding"
+    jobs:
+      - "{term} infrastructure engineer"
+      - "{term} machine learning platform"
   provider_pain:
     - "RunPod unreliable GPU"
     - "Vast.ai GPU issue"

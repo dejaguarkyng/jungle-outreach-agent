@@ -14,7 +14,10 @@ The adapter runtime enforces:
 
 - bounded retries for network and timeout failures;
 - per-adapter request throttling;
-- in-memory discovery caching with `cache_ttl_seconds`;
+- discovery and document caching with `cache_ttl_seconds`;
+- separate bounded source and candidate-enrichment executors;
+- canonical candidate envelopes carrying source attribution, resolved
+  identities, documents, evidence, and conflicts;
 - configured request timeouts;
 - structured, redacted source errors;
 - degraded health after adapter failures;
@@ -28,6 +31,10 @@ does not bypass authentication, access controls, CAPTCHAs, or anti-bot systems.
 Errors are emitted in `run_summary.json` source signals. Credential values and
 authorization query parameters are redacted. A source failure returns partial
 results and does not crash unrelated adapters.
+
+Candidates deduplicate by canonical repository, official domain, package
+identity, and verified owner while preserving contributing source evidence.
+Deadline and early-stop reasons are recorded explicitly.
 
 Official pages are also inspected for public contact methods. Supported
 provenance includes email, contact and partnership forms, booking links,

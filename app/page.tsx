@@ -2,6 +2,7 @@ import Link from "next/link";
 import { ArrowRight, CheckCircle2, Mail, Target, Users } from "lucide-react";
 import { OutreachRepository } from "@/src/db/repository";
 import { getZeptoMailStatus } from "@/apps/api/src/services/zeptomail";
+import { getEnv } from "@/src/config/env";
 import { PageHeader } from "@/components/page-header";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -12,6 +13,15 @@ export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
   const repository = new OutreachRepository();
+  const env = getEnv();
+  const businessProfile = repository.getBusinessProfile();
+  const savedCampaigns = repository.listCampaigns();
+  const setupChecks = [
+    ["Business profile", Boolean(businessProfile)],
+    ["Saved campaign", savedCampaigns.length > 0],
+    ["Jungle Grid API", Boolean(env.JUNGLEGRID_API_KEY)],
+    ["Browser session key", Boolean(env.OPENLINE_SESSION_ENCRYPTION_KEY)],
+  ] as const;
   const summary = repository.dashboardSummary() as {
     counts: Record<string, number>;
     totalProspects: number;
@@ -52,7 +62,7 @@ export default async function DashboardPage() {
     <>
       <PageHeader
         title="Operations dashboard"
-        description="Public-evidence prospecting, internal draft review, and manually approved ZeptoMail sending."
+        description="Self-hosted prospect research, internal draft review, and manually approved delivery."
         actions={
           <Link href="/run" className={cn(buttonVariants(), "no-underline")}>
             Start manual run <ArrowRight className="h-4 w-4" />
@@ -60,6 +70,24 @@ export default async function DashboardPage() {
         }
       />
       <div className="space-y-6 p-5 lg:p-8">
+        {!businessProfile || savedCampaigns.length === 0 ? (
+          <Card className="border-amber-400/30 bg-amber-500/10 p-4 text-sm text-amber-100">
+            <p className="font-medium">Finish initial setup</p>
+            <p className="mt-1 text-amber-100/80">
+              {businessProfile ? "Create at least one saved campaign." : "Add a business profile, then create your first campaign."}
+            </p>
+            <div className="mt-3 flex gap-2">
+              {!businessProfile ? (
+                <Link href="/settings" className={cn(buttonVariants({ variant: "secondary" }), "no-underline")}>
+                  Open settings
+                </Link>
+              ) : null}
+              <Link href="/campaigns" className={cn(buttonVariants({ variant: "secondary" }), "no-underline")}>
+                Manage campaigns
+              </Link>
+            </div>
+          </Card>
+        ) : null}
         {!zeptomail.sendEnabled ? (
           <Card className="border-amber-400/30 bg-amber-500/10 p-4 text-sm text-amber-100">
             <p className="font-medium">ZeptoMail sending is disabled</p>
@@ -104,6 +132,31 @@ export default async function DashboardPage() {
             <p className="mt-2 text-xs text-muted-foreground">
               Sends require approval, validation, suppression checks, and a user click.
             </p>
+          </Card>
+        </section>
+
+        <section className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
+          <Card className="p-5">
+            <h2 className="text-sm font-semibold">Setup checklist</h2>
+            <div className="mt-4 space-y-3">
+              {setupChecks.map(([label, ready]) => (
+                <div key={label} className="flex items-center justify-between rounded-md border bg-black/20 px-3 py-2 text-sm">
+                  <span>{label}</span>
+                  <Badge tone={ready ? "green" : "amber"}>
+                    {ready ? "Ready" : "Missing"}
+                  </Badge>
+                </div>
+              ))}
+            </div>
+          </Card>
+          <Card className="p-5">
+            <h2 className="text-sm font-semibold">Next steps</h2>
+            <div className="mt-4 space-y-2 text-sm text-muted-foreground">
+              <p>1. Save the business profile in Settings.</p>
+              <p>2. Create at least one campaign from the Campaigns page.</p>
+              <p>3. Import seed prospects and suppressions if you already have them.</p>
+              <p>4. Configure provider credentials and browser authorization only for the channels you plan to use.</p>
+            </div>
           </Card>
         </section>
 

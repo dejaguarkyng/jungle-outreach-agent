@@ -144,6 +144,21 @@ class SourceEvidence:
     clean: bool = True
 
 
+@dataclass(frozen=True)
+class SourceCandidateEnvelope:
+    candidate: SourceCandidate
+    source_attribution: tuple[str, ...]
+    resolved_entities: tuple[dict[str, Any], ...]
+    contacts: tuple[dict[str, Any], ...]
+    documents: tuple[RawSourceDocument, ...]
+    evidence: tuple[SourceEvidence, ...]
+    canonical_repository: str | None = None
+    official_domain: str | None = None
+    package_identity: str | None = None
+    verified_owner: str | None = None
+    resolution_conflicts: tuple[str, ...] = ()
+
+
 class ProspectSourceAdapter(Protocol):
     source_type: str
     capabilities: SourceCapabilities
@@ -366,7 +381,10 @@ class PublicApiAdapter:
         self.last_errors: list[SourceAdapterError] = []
         self._reported_error_count = 0
         self._cache: dict[str, tuple[float, list[SourceCandidate]]] = {}
+        self._document_cache: dict[str, tuple[float, list[RawSourceDocument]]] = {}
         self._last_request_at = 0.0
+        self.cache_hits = 0
+        self.request_count = 0
 
     def health_check(self) -> SourceHealth:
         if self.last_errors:
@@ -426,6 +444,7 @@ class PublicApiAdapter:
         for attempt in range(1, attempts + 1):
             try:
                 self._throttle()
+                self.request_count += 1
                 return callback()
             except (
                 urllib.error.URLError,
@@ -472,6 +491,7 @@ class PublicApiAdapter:
         )
         cached = self._cache.get(cache_key)
         if cached and cached[0] > time.monotonic():
+            self.cache_hits += 1
             return cached[1]
 
         def discover_candidates() -> list[SourceCandidate]:
@@ -533,13 +553,18 @@ class PublicApiAdapter:
                     metadata=metadata,
                 )
             ]
+        cache_key = candidate.url.split("#", 1)[0]
+        cached = self._document_cache.get(cache_key)
+        if cached and cached[0] > time.monotonic():
+            self.cache_hits += 1
+            return cached[1]
         content = self._execute(
             "fetch",
             lambda: _request_text(candidate.url, self.capabilities.timeout_seconds),
         )
         if content is None:
             return []
-        return [
+        documents = [
             RawSourceDocument(
                 source_type=candidate.source_type,
                 source_id=candidate.source_id,
@@ -551,6 +576,16 @@ class PublicApiAdapter:
                 metadata=candidate.metadata,
             )
         ]
+        ttl = max(0, int(self.config.get("cache_ttl_seconds", 900)))
+        if ttl:
+            self._document_cache[cache_key] = (time.monotonic() + ttl, documents)
+        return documents
+
+    def metrics(self) -> dict[str, int]:
+        return {
+            "cache_hits": self.cache_hits,
+            "requests": self.request_count,
+        }
 
     def normalize(self, documents: list[RawSourceDocument], context: NormalizationContext) -> list[SourceEvidence]:
         evidence: list[SourceEvidence] = []

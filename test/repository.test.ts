@@ -4,6 +4,7 @@ import fs from "node:fs";
 import { closeDatabase, getDatabase } from "@/src/db/database";
 import { OutreachRepository } from "@/src/db/repository";
 import { resetEnvForTests } from "@/src/config/env";
+import { buildCampaignFromProfile } from "@/src/services/campaign-config";
 
 const base = {
   name: "Jane Maintainer",
@@ -56,6 +57,69 @@ describe("OutreachRepository deduplication", () => {
     });
   });
 
+  it("persists expanded operational settings", () => {
+    const repository = new OutreachRepository();
+    const saved = repository.saveSettings({
+      ...repository.getSettings(),
+      maximumConcurrentSources: 5,
+      maximumConcurrentEnrichments: 9,
+      preliminaryTargetMultiplier: 4,
+      minimumDistinctSources: 2,
+      sourceCacheTtlSeconds: 600,
+      maximumEvidencePerSource: 12,
+      maximumProspectsPerEntity: 3,
+      proofMinimumScore: 80,
+      browserAutomationEnabled: true,
+      browserAllowedDomains: ["example.com", "portal.example.com"],
+      screenshotRetentionDays: 10,
+      dataRetentionDays: 45,
+    });
+    expect(saved.preliminaryTargetMultiplier).toBe(4);
+    expect(saved.minimumDistinctSources).toBe(2);
+    expect(saved.maximumEvidencePerSource).toBe(12);
+    expect(saved.proofMinimumScore).toBe(80);
+    expect(repository.getSettings().browserAllowedDomains).toEqual([
+      "example.com",
+      "portal.example.com",
+    ]);
+    expect(repository.getSettings().dataRetentionDays).toBe(45);
+  });
+
+  it("stores business profiles and saved campaigns", () => {
+    const repository = new OutreachRepository();
+    const profile = repository.saveBusinessProfile({
+      companyName: "Acme AI",
+      website: "https://acme.example",
+      description: "Acme builds workflow software.",
+      archetype: "software",
+      offerName: "Acme Platform",
+      offerDescription: "Managed automation for AI and ops teams.",
+      offerUrl: "https://acme.example/platform",
+      senderName: "Taylor",
+      senderEmail: "taylor@acme.example",
+      signature: "Taylor",
+      targetMarketSummary: "Small and mid-sized B2B software teams.",
+    });
+    const campaign = buildCampaignFromProfile(profile, {
+      campaignId: "acme-software-outbound",
+      name: "Acme software outbound",
+      archetype: "software",
+    });
+    repository.saveCampaign(campaign);
+
+    expect(repository.getBusinessProfile()?.companyName).toBe("Acme AI");
+    expect(repository.listCampaigns()).toEqual([
+      expect.objectContaining({
+        campaignId: "acme-software-outbound",
+        name: "Acme software outbound",
+        source: "saved",
+      }),
+    ]);
+    expect(repository.getCampaign("acme-software-outbound")?.campaign.offer.name).toBe(
+      "Acme Platform",
+    );
+  });
+
   it("migrates legacy prospect rows into contact points", () => {
     closeDatabase();
     const filename = `/tmp/openline-legacy-${Date.now()}.db`;
@@ -106,6 +170,11 @@ describe("OutreachRepository deduplication", () => {
     process.env.DATABASE_URL = filename;
     resetEnvForTests();
     const migrated = getDatabase();
+    const backups = fs
+      .readdirSync("/tmp")
+      .filter((entry) => entry.startsWith(filename.split("/").pop()! + ".pre-v3-"));
+    expect(backups).toHaveLength(1);
+    expect(fs.statSync(`/tmp/${backups[0]}`).size).toBeGreaterThan(0);
     const repository = new OutreachRepository(migrated);
     expect(repository.getProspect("legacy-1")?.contactPoints?.[0].value).toBe(
       "legacy@example.dev",
@@ -128,6 +197,7 @@ describe("OutreachRepository deduplication", () => {
     expect(columns.find((column) => column.name === "normalized_email")?.notnull).toBe(0);
     closeDatabase();
     fs.rmSync(filename, { force: true });
+    fs.rmSync(`/tmp/${backups[0]}`, { force: true });
     process.env.DATABASE_URL = ":memory:";
     resetEnvForTests();
   });

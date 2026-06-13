@@ -87,6 +87,62 @@ export const campaignConfigurationSchema = z.object({
     requirePainSignal: z.boolean().default(false),
     maximumActivityAgeDays: z.number().int().min(1).max(3650).default(180),
   }),
+  discovery: z
+    .object({
+      maximumConcurrentSources: z.number().int().min(1).max(32).default(8),
+      maximumConcurrentEnrichments: z.number().int().min(1).max(64).default(12),
+      queryBudgetPerSource: z.number().int().min(1).max(20).default(3),
+      candidateBudgetPerQuery: z.number().int().min(1).max(50).default(8),
+      candidateBudgetPerSource: z.number().int().min(1).max(200).default(24),
+      deadlineSeconds: z.number().int().min(30).max(1800).default(180),
+      preliminaryTargetMultiplier: z.number().min(1).max(10).default(3),
+      minimumDistinctSources: z.number().int().min(1).max(10).default(1),
+      cacheTtlSeconds: z.number().int().min(0).max(86400).default(900),
+    })
+    .default({
+      maximumConcurrentSources: 8,
+      maximumConcurrentEnrichments: 12,
+      queryBudgetPerSource: 3,
+      candidateBudgetPerQuery: 8,
+      candidateBudgetPerSource: 24,
+      deadlineSeconds: 180,
+      preliminaryTargetMultiplier: 3,
+      minimumDistinctSources: 1,
+      cacheTtlSeconds: 900,
+    }),
+  scoring: z
+    .object({
+      dimensions: z
+        .array(
+          z.object({
+            key: z.string().trim().regex(/^[a-zA-Z][a-zA-Z0-9_]*$/),
+            label: z.string().trim().min(1),
+            maximumScore: z.number().int().min(1).max(100),
+            acceptedClaimTypes: z.array(z.string().trim().min(1)).min(1),
+            minimumIndependentEvidence: z.number().int().min(1).max(10).default(1),
+            minimumSourceAuthority: z.number().min(0).max(1).default(0.5),
+            minimumFreshness: z.number().min(0).max(1).default(0),
+            acceptedDirectness: z
+              .array(z.enum(["direct", "strong_inference", "weak_inference"]))
+              .min(1)
+              .default(["direct", "strong_inference"]),
+            requiredSignals: z.array(z.string().trim().min(1)).default([]),
+            required: z.boolean().default(false),
+          }),
+        )
+        .min(1),
+    })
+    .optional(),
+  sourceDiversity: z
+    .object({
+      minimumDistinctSources: z.number().int().min(1).max(10).default(1),
+      maximumEvidencePerSource: z.number().int().min(1).max(100).optional(),
+      maximumProspectsPerEntity: z.number().int().min(1).max(100).default(1),
+    })
+    .default({
+      minimumDistinctSources: 1,
+      maximumProspectsPerEntity: 1,
+    }),
   messaging: z.object({
     positioning: z.string().trim().min(1),
     callToAction: z.string().trim().min(1),
@@ -96,12 +152,38 @@ export const campaignConfigurationSchema = z.object({
     .object({
       strategy: z.string().trim().min(1),
       artifactTypes: z.array(z.string().trim().min(1)).min(1),
+      maximumArtifactsPerProspect: z.number().int().min(1).max(5).default(1),
+      minimumScore: z.number().int().min(0).max(100).default(70),
     })
     .default({
       strategy: "implementation_plan",
       artifactTypes: ["implementation_plan"],
+      maximumArtifactsPerProspect: 1,
+      minimumScore: 70,
     }),
   channels: z.array(z.string().trim().min(1)).default(["email"]),
+  delivery: z
+    .object({
+      firstTouchRequiresApproval: z.boolean().default(true),
+      browserAutomationEnabled: z.boolean().default(false),
+      allowedBrowserDomains: z.array(z.string().trim().min(1)).default([]),
+      screenshotRetentionDays: z.number().int().min(1).max(90).default(7),
+      providers: z
+        .record(
+          z.object({
+            enabled: z.boolean().default(false),
+            allowedChannels: z.array(z.string().trim().min(1)).default([]),
+          }),
+        )
+        .default({}),
+    })
+    .default({
+      firstTouchRequiresApproval: true,
+      browserAutomationEnabled: false,
+      allowedBrowserDomains: [],
+      screenshotRetentionDays: 7,
+      providers: {},
+    }),
   conversionGoal: z.string().trim().min(1).default("qualified_conversation"),
   autonomy: z
     .object({
@@ -126,7 +208,7 @@ export const campaignConfigurationSchema = z.object({
 
 export type CampaignConfiguration = z.infer<typeof campaignConfigurationSchema>;
 
-export const scoreBreakdownSchema = z.object({
+export const legacyScoreBreakdownSchema = z.object({
   agentMcpRelevance: z.number().int().min(0).max(20),
   aiWorkloadRelevance: z.number().int().min(0).max(20),
   infrastructurePain: z.number().int().min(0).max(20),
@@ -134,6 +216,11 @@ export const scoreBreakdownSchema = z.object({
   jungleGridComprehension: z.number().int().min(0).max(15),
   contactQuality: z.number().int().min(0).max(10),
 });
+
+export const scoreBreakdownSchema = z.record(
+  z.string().min(1),
+  z.number().int().min(0).max(100),
+);
 
 export type ScoreBreakdown = z.infer<typeof scoreBreakdownSchema>;
 
@@ -326,6 +413,7 @@ export const messageSchema = z.object({
   status: z.enum(["draft", "approval_required", "approved", "sent", "received", "blocked", "failed"]),
   classification: z.string().nullable(),
   validationStatus: draftValidationStatusSchema,
+  evidenceIds: z.array(z.string()).default([]),
   junglegridJobId: z.string().nullable(),
   policyDecisionId: z.string().nullable(),
   externalMessageId: z.string().nullable(),
@@ -333,6 +421,54 @@ export const messageSchema = z.object({
   sentAt: z.string().nullable(),
 });
 export type Message = z.infer<typeof messageSchema>;
+
+export const deliveryCapabilitySchema = z.enum([
+  "available",
+  "approval_required",
+  "blocked_configuration",
+  "manual_delivery",
+]);
+export type DeliveryCapability = z.infer<typeof deliveryCapabilitySchema>;
+
+export const deliveryAdapterStatusSchema = z.object({
+  adapterId: z.string().min(1),
+  configured: z.boolean(),
+  available: z.boolean(),
+  channels: z.array(contactPointTypeSchema),
+  missingCredentials: z.array(z.string()),
+  message: z.string(),
+});
+export type DeliveryAdapterStatus = z.infer<typeof deliveryAdapterStatusSchema>;
+
+export const providerAuthorizationSchema = z.object({
+  id: z.string(),
+  workspaceId: z.string(),
+  provider: z.string(),
+  destinationPattern: z.string(),
+  permissions: z.array(z.string()),
+  status: z.enum(["active", "revoked", "expired"]),
+  authorizedBy: z.string(),
+  authorizedAt: z.string(),
+  expiresAt: z.string().nullable(),
+});
+export type ProviderAuthorization = z.infer<typeof providerAuthorizationSchema>;
+
+export const deliveryAttemptSchema = z.object({
+  id: z.string(),
+  jobId: z.string(),
+  messageId: z.string(),
+  adapterId: z.string(),
+  attemptNumber: z.number().int().positive(),
+  status: z.enum(["queued", "sending", "sent", "blocked", "retryable", "failed"]),
+  retryClass: z.enum(["none", "transient", "rate_limited", "authentication", "permanent"]),
+  providerResponse: z.record(z.unknown()),
+  externalMessageId: z.string().nullable(),
+  failureCode: z.string().nullable(),
+  failureMessage: z.string().nullable(),
+  createdAt: z.string(),
+  completedAt: z.string().nullable(),
+});
+export type DeliveryAttempt = z.infer<typeof deliveryAttemptSchema>;
 
 export const autonomyModeSchema = z.enum([
   "draft_only",
@@ -414,6 +550,66 @@ export const artifactEmailDraftSchema = z.object({
 export type ArtifactEmailDraft = z.infer<typeof artifactEmailDraftSchema>;
 export const emailDraftsArtifactSchema = z.array(artifactEmailDraftSchema);
 
+export const artifactMessageDraftSchema = z.object({
+  prospect_id: z.string().min(1),
+  contact_point: z.object({
+    type: contactPointTypeSchema,
+    value: z.string().min(1),
+    source_url: z.string().url(),
+    publicly_listed: z.boolean(),
+    authorized: z.boolean(),
+    confidence: z.number().min(0).max(1),
+  }),
+  channel: contactPointTypeSchema,
+  content_type: z.enum([
+    "email",
+    "direct_message",
+    "discussion",
+    "issue",
+    "form",
+    "phone_script",
+  ]),
+  subject: z.string().max(MAX_SUBJECT_LENGTH).nullable(),
+  body: z.string().trim().min(1),
+  word_count: z.number().int().positive(),
+  links: z.array(z.string().url()),
+  evidence_urls: z.array(z.string().url()).min(1),
+  personalization_claims: z.array(z.string().trim().min(1)).min(1),
+  evidence_ids: z.array(z.string().min(1)).min(1),
+  fit_score: z.number().int().min(0).max(100),
+  model_mode: modelModeSchema,
+  delivery_capability: z.enum([
+    "available",
+    "approval_required",
+    "blocked_configuration",
+    "manual_delivery",
+  ]),
+  approval_status: z.enum(["approval_required", "approved", "rejected"]),
+  validation_status: draftValidationStatusSchema,
+  validation_errors: z.array(z.string()),
+  junglegrid_job_id: z.string().min(1),
+});
+export type ArtifactMessageDraft = z.infer<typeof artifactMessageDraftSchema>;
+export const messageDraftsArtifactSchema = z.array(artifactMessageDraftSchema);
+
+export const artifactProofSchema = z.object({
+  prospect_id: z.string().min(1),
+  type: z.string().min(1),
+  title: z.string().min(1),
+  content: z.string().min(1),
+  uri: z.string().nullable(),
+  evidence_ids: z.array(z.string().min(1)).min(1),
+  junglegrid_job_id: z.string().min(1),
+});
+export type ArtifactProof = z.infer<typeof artifactProofSchema>;
+export const proofArtifactsArtifactSchema = z.array(artifactProofSchema);
+
+export const artifactEnvelope = <T extends z.ZodTypeAny>(items: T) =>
+  z.object({
+    schema_version: z.literal("3.0"),
+    items,
+  });
+
 export const canonicalEntitySchema = z.object({
   entity_id: z.string().min(1),
   entity_type: z.enum([
@@ -478,7 +674,7 @@ export const structuredEvidenceSchema = z.object({
 
 export const artifactProspectSchema = z.object({
   prospect_id: z.string().min(1),
-  schema_version: z.string().optional(),
+  schema_version: z.literal("3.0"),
   entity_id: z.string().optional(),
   canonical_entity_id: z.string().optional(),
   name: z.string().min(1),
@@ -547,6 +743,7 @@ export const researchArtifactSchema = z.object({
 export const scoredProspectArtifactSchema = artifactProspectSchema.extend({
   fit_score: z.number().int().min(0).max(100),
   score_breakdown: scoreBreakdownSchema,
+  legacy_score_breakdown: legacyScoreBreakdownSchema.optional(),
   evidence_strength: z.number().min(0).max(1).optional(),
   evidence: z.array(structuredEvidenceSchema).optional(),
   score_evidence_ids: z.record(z.array(z.string())).optional(),
@@ -559,22 +756,20 @@ export const scoredProspectArtifactSchema = artifactProspectSchema.extend({
   score_explanation: z.string().min(1).optional(),
   outreach_priority: z.enum(["high", "medium", "low"]).optional(),
   excluded: z.boolean().optional(),
-  proof_artifacts: z
-    .array(
-      z.object({
-        type: z.string().min(1),
-        title: z.string().min(1),
-        content: z.string().min(1),
-        uri: z.string().nullable().optional(),
-        evidence_ids: z.array(z.string()),
-        junglegrid_job_id: z.string().min(1),
-      }),
-    )
-    .optional(),
+  exclusion_reasons: z.array(z.string().min(1)).optional(),
   junglegrid_job_id: z.string().min(1).optional(),
 });
 
+export const prospectsFileSchema = artifactEnvelope(z.array(artifactProspectSchema));
+export const researchNotesFileSchema = artifactEnvelope(z.array(researchArtifactSchema));
+export const scoredProspectsFileSchema = artifactEnvelope(
+  z.array(scoredProspectArtifactSchema),
+);
+export const proofArtifactsFileSchema = artifactEnvelope(proofArtifactsArtifactSchema);
+export const messageDraftsFileSchema = artifactEnvelope(messageDraftsArtifactSchema);
+
 export const runSummaryArtifactSchema = z.object({
+  schema_version: z.literal("3.0"),
   status: z.enum(["successful", "degraded", "failed"]).optional(),
   job: workerJobSchema,
   mode: outreachModeSchema,
@@ -616,9 +811,33 @@ export const runSummaryArtifactSchema = z.object({
         official_url: z.string().optional(),
         independence_groups: z.array(z.string()).optional(),
         status: z.string().optional(),
+        health_status: z
+          .enum(["healthy", "empty", "degraded", "failed", "productive", "timeout"])
+          .optional(),
+        timeout_reason: z.string().optional(),
         error: z.string().optional(),
       }),
     )
+    .optional(),
+  source_metrics: z
+    .record(
+      z.string(),
+      z.object({
+        queries: z.number().int().nonnegative(),
+        candidates: z.number().int().nonnegative(),
+        evidence_items: z.number().int().nonnegative(),
+        prospects: z.number().int().nonnegative(),
+        qualified: z.number().int().nonnegative(),
+        cache_hits: z.number().int().nonnegative(),
+        requests: z.number().int().nonnegative(),
+        duration_ms: z.number().int().nonnegative(),
+        status: z.enum(["healthy", "empty", "degraded", "failed", "productive", "timeout"]),
+        timeout_reason: z.string().optional(),
+      }),
+    )
+    .optional(),
+  stage_durations_ms: z
+    .record(z.string(), z.number().int().nonnegative())
     .optional(),
   discovered_raw: z.number().int().nonnegative().optional(),
   deduplicated_entities: z.number().int().nonnegative().optional(),
@@ -662,6 +881,7 @@ export const runSummaryArtifactSchema = z.object({
 });
 
 export const validationReportArtifactSchema = z.object({
+  schema_version: z.literal("3.0"),
   valid: z.boolean(),
   checked: z.number().int().nonnegative(),
   passed: z.number().int().nonnegative(),
@@ -679,10 +899,12 @@ export const validationReportArtifactSchema = z.object({
 });
 
 export const artifactBundleSchema = z.object({
+  schema_version: z.literal("3.0"),
   prospects: z.array(artifactProspectSchema),
   research_notes: z.array(researchArtifactSchema),
   scored_prospects: z.array(scoredProspectArtifactSchema),
-  email_drafts: emailDraftsArtifactSchema,
+  proof_artifacts: proofArtifactsArtifactSchema,
+  message_drafts: messageDraftsArtifactSchema,
   run_summary: runSummaryArtifactSchema,
   validation_report: validationReportArtifactSchema,
 });
@@ -720,6 +942,7 @@ export const runSchema = z.object({
   retryCount: z.number().int(),
   modelMode: modelModeSchema.nullable(),
   artifacts: z.array(z.string()),
+  runSummary: runSummaryArtifactSchema.nullable().default(null),
   phase: z.enum(runPhases),
   notes: z.string().nullable(),
   error: z.string().nullable(),
@@ -738,7 +961,67 @@ export const settingsSchema = z.object({
   modelName: z.string().trim().min(1),
   workerImage: z.string().trim().min(1),
   dryRun: z.boolean(),
+  maximumConcurrentSources: z.number().int().min(1).max(32).default(8),
+  maximumConcurrentEnrichments: z.number().int().min(1).max(64).default(12),
+  discoveryDeadlineSeconds: z.number().int().min(30).max(1800).default(180),
+  sourceQueryBudget: z.number().int().min(1).max(20).default(3),
+  sourceCandidateBudget: z.number().int().min(1).max(200).default(24),
+  preliminaryTargetMultiplier: z.number().min(1).max(10).default(3),
+  minimumDistinctSources: z.number().int().min(1).max(10).default(1),
+  sourceCacheTtlSeconds: z.number().int().min(0).max(86400).default(900),
+  maximumEvidencePerSource: z.number().int().min(1).max(100).default(25),
+  maximumProspectsPerEntity: z.number().int().min(1).max(100).default(1),
+  proofMinimumScore: z.number().int().min(0).max(100).default(70),
+  browserAutomationEnabled: z.boolean().default(false),
+  browserAllowedDomains: z.array(z.string().trim().min(1)).default([]),
+  screenshotRetentionDays: z.number().int().min(1).max(90).default(7),
+  dataRetentionDays: z.number().int().min(0).max(3650).default(0),
   defaultAllowedOutreachUrl: z.literal(DEFAULT_ALLOWED_OUTREACH_URL),
 });
 
 export type OutreachSettings = z.infer<typeof settingsSchema>;
+
+export const businessArchetypeSchema = z.enum([
+  "software",
+  "local_services",
+  "agency_services",
+]);
+export type BusinessArchetype = z.infer<typeof businessArchetypeSchema>;
+
+export const businessProfileSchema = z.object({
+  id: z.string(),
+  companyName: z.string().trim().min(1),
+  website: z.string().url(),
+  description: z.string().trim().min(1),
+  archetype: businessArchetypeSchema,
+  offerName: z.string().trim().min(1),
+  offerDescription: z.string().trim().min(1),
+  offerUrl: z.string().url(),
+  senderName: z.string().trim().min(1),
+  senderEmail: z.string().email().nullable(),
+  signature: z.string().trim().min(1),
+  targetMarketSummary: z.string().trim().min(1),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type BusinessProfile = z.infer<typeof businessProfileSchema>;
+
+export const businessProfileInputSchema = businessProfileSchema.omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type BusinessProfileInput = z.infer<typeof businessProfileInputSchema>;
+
+export const campaignRecordSchema = z.object({
+  id: z.string(),
+  campaignId: z.string().trim().min(1),
+  name: z.string().trim().min(1),
+  active: z.boolean(),
+  archetype: businessArchetypeSchema,
+  source: z.enum(["template", "saved"]),
+  campaign: campaignConfigurationSchema,
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type CampaignRecord = z.infer<typeof campaignRecordSchema>;

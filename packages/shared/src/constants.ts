@@ -24,7 +24,8 @@ export const requiredArtifactNames = [
   "prospects.json",
   "research_notes.json",
   "scored_prospects.json",
-  "email_drafts.json",
+  "proof_artifacts.json",
+  "message_drafts.json",
   "run_summary.json",
   "validation_report.json",
 ] as const;

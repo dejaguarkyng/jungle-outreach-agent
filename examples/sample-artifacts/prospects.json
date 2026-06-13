@@ -1,24 +1,213 @@
-[
-  {
-    "prospect_id": "sample-agent-runtime",
-    "name": "Avery Maintainer",
-    "email": "hello@agent-runtime.dev",
-    "email_source_url": "https://agent-runtime.dev/contact",
-    "email_source_type": "official_website",
-    "project": "sample/agent-runtime",
-    "project_url": "https://github.com/sample/agent-runtime",
-    "project_description": "An open-source runtime for durable agent jobs and tool execution.",
-    "category": "agent_compute"
-  },
-  {
-    "prospect_id": "sample-mcp-worker",
-    "name": "Morgan Builder",
-    "email": "team@mcp-worker.dev",
-    "email_source_url": "https://mcp-worker.dev/about",
-    "email_source_type": "official_website",
-    "project": "sample/mcp-worker",
-    "project_url": "https://github.com/sample/mcp-worker",
-    "project_description": "MCP tools that launch batch inference and data processing jobs.",
-    "category": "mcp"
-  }
-]
+{
+  "schema_version": "3.0",
+  "items": [
+    {
+      "prospect_id": "sample-mcp-worker",
+      "schema_version": "3.0",
+      "entity_id": "project:sample-mcp-worker",
+      "name": "Morgan Builder",
+      "email": "morgan@mcp-worker.dev",
+      "email_source_url": "https://mcp-worker.dev/about",
+      "email_source_type": "official_website",
+      "contact_points": [
+        {
+          "type": "email",
+          "value": "morgan@mcp-worker.dev",
+          "source_url": "https://mcp-worker.dev/about",
+          "publicly_listed": true,
+          "authorized": true,
+          "confidence": 0.8
+        }
+      ],
+      "contact_provenance": {
+        "value": "morgan@mcp-worker.dev",
+        "source_url": "https://mcp-worker.dev/about",
+        "source_type": "official_website",
+        "publicly_listed": true,
+        "person_project_match": "verified",
+        "verification_method": "public_source",
+        "confidence": 0.8,
+        "collected_at": "2026-06-12T22:18:08.827785+00:00",
+        "appropriate_use_category": "professional_outreach"
+      },
+      "project": "sample/mcp-worker",
+      "project_key": "sample-mcp-worker",
+      "project_url": "https://github.com/sample/mcp-worker",
+      "project_description": "MCP tools that launch batch inference and data processing jobs.",
+      "category": "mcp",
+      "owner_login": "sample",
+      "owner_type": "User",
+      "updated_at": "2026-06-01T00:00:00Z",
+      "pushed_at": "2026-06-01T00:00:00Z",
+      "open_issues_count": 0,
+      "readme_present": true,
+      "canonical_entity_id": "project:sample-mcp-worker",
+      "canonical_entities": [
+        {
+          "entity_id": "project:sample-mcp-worker",
+          "entity_type": "project",
+          "canonical_name": "sample/mcp-worker",
+          "aliases": [
+            "sample/mcp-worker",
+            "Morgan Builder",
+            "mcp-worker"
+          ],
+          "source_specific_ids": {
+            "project_url": "https://github.com/sample/mcp-worker"
+          },
+          "confidence": 0.9
+        },
+        {
+          "entity_id": "person:morgan-builder-morgan-mcp-worker-dev",
+          "entity_type": "person",
+          "canonical_name": "Morgan Builder",
+          "aliases": [
+            "Morgan Builder",
+            "sample"
+          ],
+          "source_specific_ids": {
+            "email": "morgan@mcp-worker.dev"
+          },
+          "confidence": 0.75
+        },
+        {
+          "entity_id": "contact:morgan-mcp-worker-dev",
+          "entity_type": "contact_point",
+          "canonical_name": "morgan@mcp-worker.dev",
+          "aliases": [
+            "morgan@mcp-worker.dev"
+          ],
+          "source_specific_ids": {
+            "contact_type": "email"
+          },
+          "confidence": 0.8
+        },
+        {
+          "entity_id": "domain:mcp-worker-dev",
+          "entity_type": "domain",
+          "canonical_name": "mcp-worker.dev",
+          "aliases": [
+            "mcp-worker.dev"
+          ],
+          "source_specific_ids": {},
+          "confidence": 0.65
+        },
+        {
+          "entity_id": "repository:github-com-sample-mcp-worker",
+          "entity_type": "repository",
+          "canonical_name": "sample/mcp-worker",
+          "aliases": [
+            "github.com/sample/mcp-worker",
+            "sample/mcp-worker"
+          ],
+          "source_specific_ids": {
+            "github": "sample/mcp-worker"
+          },
+          "confidence": 0.95
+        },
+        {
+          "entity_id": "source_document:https-mcp-worker-dev-about",
+          "entity_type": "source_document",
+          "canonical_name": "https://mcp-worker.dev/about",
+          "aliases": [
+            "https://mcp-worker.dev/about"
+          ],
+          "source_specific_ids": {
+            "url": "https://mcp-worker.dev/about"
+          },
+          "confidence": 1.0
+        },
+        {
+          "entity_id": "source_document:https-github-com-sample-mcp-worker",
+          "entity_type": "source_document",
+          "canonical_name": "https://github.com/sample/mcp-worker",
+          "aliases": [
+            "https://github.com/sample/mcp-worker"
+          ],
+          "source_specific_ids": {
+            "url": "https://github.com/sample/mcp-worker"
+          },
+          "confidence": 1.0
+        },
+        {
+          "entity_id": "source_document:https-github-com-sample-mcp-worker-readme",
+          "entity_type": "source_document",
+          "canonical_name": "https://github.com/sample/mcp-worker#readme",
+          "aliases": [
+            "https://github.com/sample/mcp-worker#readme"
+          ],
+          "source_specific_ids": {
+            "url": "https://github.com/sample/mcp-worker#readme"
+          },
+          "confidence": 1.0
+        }
+      ],
+      "verified_relationships": [
+        {
+          "relationship_type": "person_reachable_for_project",
+          "from_entity_id": "person:morgan-builder-morgan-mcp-worker-dev",
+          "to_entity_id": "project:sample-mcp-worker",
+          "confidence": 0.85,
+          "evidence_ids": [
+            "ev_ccd04ee46bc73b97",
+            "ev_9949262a08e3bacb"
+          ]
+        },
+        {
+          "relationship_type": "contact_point_for_person_or_project",
+          "from_entity_id": "contact:morgan-mcp-worker-dev",
+          "to_entity_id": "person:morgan-builder-morgan-mcp-worker-dev",
+          "confidence": 0.8,
+          "evidence_ids": [
+            "ev_ccd04ee46bc73b97"
+          ]
+        },
+        {
+          "relationship_type": "repository_represents_project",
+          "from_entity_id": "repository:github-com-sample-mcp-worker",
+          "to_entity_id": "project:sample-mcp-worker",
+          "confidence": 0.95,
+          "evidence_ids": [
+            "ev_f9bc22aa682a5a6d",
+            "ev_7bda7531b3582100",
+            "ev_af2ca0818bcf50aa",
+            "ev_85f278e91fb8f02d",
+            "ev_9949262a08e3bacb",
+            "ev_be9b87c519d02a3a"
+          ]
+        },
+        {
+          "relationship_type": "source_document_supports_project",
+          "from_entity_id": "source_document:https-mcp-worker-dev-about",
+          "to_entity_id": "project:sample-mcp-worker",
+          "confidence": 0.7,
+          "evidence_ids": [
+            "ev_ccd04ee46bc73b97"
+          ]
+        },
+        {
+          "relationship_type": "source_document_supports_project",
+          "from_entity_id": "source_document:https-github-com-sample-mcp-worker",
+          "to_entity_id": "project:sample-mcp-worker",
+          "confidence": 0.7,
+          "evidence_ids": [
+            "ev_f9bc22aa682a5a6d",
+            "ev_7bda7531b3582100",
+            "ev_af2ca0818bcf50aa",
+            "ev_85f278e91fb8f02d",
+            "ev_9949262a08e3bacb",
+            "ev_be9b87c519d02a3a"
+          ]
+        },
+        {
+          "relationship_type": "source_document_supports_project",
+          "from_entity_id": "source_document:https-github-com-sample-mcp-worker-readme",
+          "to_entity_id": "project:sample-mcp-worker",
+          "confidence": 0.7,
+          "evidence_ids": []
+        }
+      ],
+      "conflicting_claims": []
+    }
+  ]
+}

@@ -567,8 +567,9 @@ restricted_sources:
                 env=env,
             )
             summary = json.loads((Path(directory) / "run_summary.json").read_text())
-            drafts = json.loads((Path(directory) / "email_drafts.json").read_text())
-            scored = json.loads((Path(directory) / "scored_prospects.json").read_text())
+            drafts = json.loads((Path(directory) / "message_drafts.json").read_text())["items"]
+            scored = json.loads((Path(directory) / "scored_prospects.json").read_text())["items"]
+            proofs = json.loads((Path(directory) / "proof_artifacts.json").read_text())["items"]
 
             self.assertEqual(summary["campaign_id"], "generic-saas-observability")
             self.assertEqual(summary["execution_backend"], "jungle_grid_mock")
@@ -577,8 +578,8 @@ restricted_sources:
             self.assertIn("Trace Harbor", drafts[0]["body"])
             self.assertEqual(drafts[0]["links"], ["https://traceharbor.example"])
             self.assertNotIn("Jungle Grid", drafts[0]["body"])
-            self.assertEqual(scored[0]["proof_artifacts"][0]["junglegrid_job_id"], "fixture-job")
-            self.assertEqual(scored[0]["proof_artifacts"][0]["type"], "website_audit")
+            self.assertEqual(proofs[0]["junglegrid_job_id"], "fixture-job")
+            self.assertEqual(proofs[0]["type"], "website_audit")
             for criterion, value in scored[0]["score_breakdown"].items():
                 if value > 0:
                     self.assertTrue(scored[0]["score_evidence_ids"][criterion])
@@ -611,11 +612,12 @@ restricted_sources:
                 env=env,
             )
             summary = json.loads((Path(directory) / "run_summary.json").read_text())
-            scored = json.loads((Path(directory) / "scored_prospects.json").read_text())
+            scored = json.loads((Path(directory) / "scored_prospects.json").read_text())["items"]
+            proofs = json.loads((Path(directory) / "proof_artifacts.json").read_text())["items"]
             self.assertEqual(summary["campaign_id"], "local-services-booking")
             self.assertEqual(len(scored), 1)
             self.assertEqual(scored[0]["category"], "other")
-            self.assertEqual(scored[0]["proof_artifacts"][0]["type"], "website_audit")
+            self.assertEqual(proofs[0]["type"], "website_audit")
 
     def test_template_run_writes_valid_artifacts(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -648,17 +650,19 @@ restricted_sources:
                     "prospects.json",
                     "research_notes.json",
                     "scored_prospects.json",
-                    "email_drafts.json",
+                    "proof_artifacts.json",
+                    "message_drafts.json",
                     "run_summary.json",
                     "validation_report.json",
                 },
             )
-            drafts = json.loads((Path(directory) / "email_drafts.json").read_text())
+            drafts = json.loads((Path(directory) / "message_drafts.json").read_text())["items"]
             self.assertGreaterEqual(len(drafts), 1)
             for draft in drafts:
                 self.assertEqual(draft["links"], ["https://junglegrid.dev"])
                 self.assertGreaterEqual(draft["word_count"], 70)
                 self.assertLessEqual(draft["word_count"], 140)
+                self.assertEqual(draft["approval_status"], "approval_required")
             report = json.loads((Path(directory) / "validation_report.json").read_text())
             self.assertIn("skipped_prospects", report)
             summary = json.loads((Path(directory) / "run_summary.json").read_text())
@@ -675,6 +679,16 @@ restricted_sources:
             "name": "Avery Maintainer",
             "email": "avery@agent-runtime.dev",
             "email_source_url": "https://agent-runtime.dev/contact",
+            "contact_points": [
+                {
+                    "type": "email",
+                    "value": "avery@agent-runtime.dev",
+                    "source_url": "https://agent-runtime.dev/contact",
+                    "publicly_listed": True,
+                    "authorized": False,
+                    "confidence": 0.9,
+                }
+            ],
             "project": "sample/agent-runtime",
             "category": "agent_compute",
             "fit_score": 92,
@@ -702,6 +716,7 @@ restricted_sources:
                 "https://github.com/sample/agent-runtime#readme",
             ],
             "evidence_strength": 0.9,
+            "evidence": [{"evidence_id": "ev-runtime", "clean": True}],
         }
         env = {
             **os.environ,
@@ -756,7 +771,7 @@ restricted_sources:
                 env=env,
             )
             summary = json.loads((Path(directory) / "run_summary.json").read_text())
-            drafts = json.loads((Path(directory) / "email_drafts.json").read_text())
+            drafts = json.loads((Path(directory) / "message_drafts.json").read_text())["items"]
             self.assertTrue(summary["fallback_used"])
             self.assertEqual(summary["status"], "degraded")
             self.assertEqual(summary["primary_model_generated"], 0)
@@ -827,7 +842,11 @@ restricted_sources:
             "domains": set(),
             "names": set(),
         }
+        campaign = json.loads(
+            (ROOT / "config" / "campaigns" / "jungle-grid.json").read_text()
+        )
         with (
+            patch.object(worker_module, "CAMPAIGN", campaign),
             patch.object(worker_module, "load_seed", return_value=seeded),
             patch.object(worker_module, "load_memory", return_value=empty_memory),
             patch.object(worker_module, "persist_memory"),
@@ -836,13 +855,13 @@ restricted_sources:
 
         self.assertEqual(
             {item["prospect_id"] for item in prospects},
-            {"email-1", "email-2"},
+            {"alternate-1", "alternate-2"},
         )
         alternate = {
             item["prospect_id"]: item["exclusion_rule_triggered"] for item in skipped
         }
-        self.assertEqual(alternate["alternate-1"], "alternate_channel_only")
-        self.assertEqual(alternate["alternate-2"], "alternate_channel_only")
+        self.assertNotIn("alternate-1", alternate)
+        self.assertNotIn("alternate-2", alternate)
 
     def test_discover_expands_search_when_seed_pool_has_no_emails(self):
         now = worker_module.utc_now()

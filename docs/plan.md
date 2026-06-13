@@ -22,6 +22,16 @@ Do not:
 
 Openline must emerge from the current system through compatible refactoring, schema evolution, adapters, migrations, new modules, and production-quality extensions.
 
+## V3 Implementation Status
+
+The coordinated v3 implementation now uses seven schema-versioned artifacts,
+multi-source candidate envelopes, independent source/enrichment concurrency,
+evidence-bound dynamic scoring, standalone proof generation, channel-neutral
+messages, mandatory first-touch approval, unified delivery adapters, encrypted
+Playwright sessions, delivery attempt auditing, and backup-first database
+migration. New worker artifacts must use `schema_version: "3.0"`; historical
+database records migrate in place.
+
 # PRIMARY OBJECTIVE
 
 Transform the current email-oriented Jungle Grid prospecting system into Openline, while preserving and improving the existing end-to-end workflow.
