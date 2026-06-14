@@ -373,7 +373,7 @@ export class JungleGridWorkloadProvider {
         OLLAMA_MODEL: campaign?.execution.draftingModel ?? this.env.OLLAMA_MODEL,
         OLLAMA_HOST: this.env.OLLAMA_HOST,
         USE_LOCAL_LLM: "true",
-        LLM_FALLBACK_MODE: "disabled",
+        LLM_FALLBACK_MODE: "template",
         FIT_SCORE_THRESHOLD: String(this.env.FIT_SCORE_THRESHOLD),
         MAX_DRAFTS_PER_DOMAIN: String(this.env.MAX_DRAFTS_PER_DOMAIN),
         GITHUB_TOKEN: this.env.GITHUB_TOKEN ?? "",

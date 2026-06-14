@@ -55,7 +55,7 @@ describe("Jungle Grid provider", () => {
     expect(payload.command).toContain("full-run-qwen");
     expect(payload.expected_artifacts).toHaveLength(7);
     expect(payload.environment.OLLAMA_MODEL).toBe("qwen2.5:3b");
-    expect(payload.environment.LLM_FALLBACK_MODE).toBe("disabled");
+    expect(payload.environment.LLM_FALLBACK_MODE).toBe("template");
     expect(payload.requires_gpu).toBe(true);
     expect(payload.gpu_count).toBe(1);
     expect(payload.optimize_for).toBe("cost");

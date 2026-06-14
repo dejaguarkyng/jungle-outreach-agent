@@ -53,7 +53,7 @@ const envSchema = z.object({
     .enum(["true", "false"])
     .default("true")
     .transform((value) => value === "true"),
-  LLM_FALLBACK_MODE: z.enum(["template", "disabled"]).default("disabled"),
+  LLM_FALLBACK_MODE: z.enum(["template", "disabled"]).default("template"),
   ZEPTOMAIL_API_KEY: optionalSecret,
   ZEPTOMAIL_API_BASE: optionalUrl,
   ZEPTOMAIL_FROM_EMAIL: z.string().email().default("sender@example.com"),
