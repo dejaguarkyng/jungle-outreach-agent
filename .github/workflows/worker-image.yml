@@ -55,11 +55,11 @@ jobs:
             --entrypoint python \
             jungle-outreach-worker:smoke \
             /app/workers/outreach/outreach_worker.py \
-            --job full-run-template \
+            --job worker-smoke-test \
             --target 2 \
             --output /workspace/artifacts \
             --input /app/examples/sample-worker-input.json
-          test -s artifacts/email_drafts.json
+          test -s artifacts/message_drafts.json
 
       - name: Login to Docker Hub
         if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')

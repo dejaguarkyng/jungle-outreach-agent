@@ -163,6 +163,7 @@ JOBS = {
     "discover",
     "research",
     "score",
+    "worker-smoke-test",
     "write-emails-template",
     "write-emails-qwen",
     "full-run-template",
@@ -4227,6 +4228,7 @@ def run(args: argparse.Namespace) -> int:
         prospects, skipped, adapter_signals = discover(args.target, input_path, args.category, registry)
         stage_durations_ms["source_discovery"] = int((time.monotonic() - stage_started) * 1000)
         _, sources_succeeded, sources_degraded, sources_failed = health_counts(registry.health())
+        smoke_test_mode = args.job == "worker-smoke-test"
         use_qwen = args.job in {"write-emails-qwen", "full-run-qwen"}
         model = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
         fallback_mode = os.getenv("LLM_FALLBACK_MODE", "template")
@@ -4248,7 +4250,7 @@ def run(args: argparse.Namespace) -> int:
         stage_started = time.monotonic()
         notes = research(prospects)
         stage_durations_ms["prospect_research"] = int((time.monotonic() - stage_started) * 1000)
-        if use_qwen:
+        if use_qwen and not smoke_test_mode:
             semantic_ready = (
                 os.getenv("USE_LOCAL_LLM", "true").lower() == "true" and ensure_ollama(model)
             )
@@ -4310,6 +4312,7 @@ def run(args: argparse.Namespace) -> int:
             "latency_ms": 0,
         }
         if args.job in {
+            "worker-smoke-test",
             "write-emails-template",
             "write-emails-qwen",
             "full-run-template",
@@ -4359,7 +4362,7 @@ def run(args: argparse.Namespace) -> int:
             }
             for row in prospects
         ]
-        mode = "junglegrid-qwen" if use_qwen else "junglegrid-template"
+        mode = "junglegrid-smoke-test" if smoke_test_mode else ("junglegrid-qwen" if use_qwen else "junglegrid-template")
         fallback_only = use_qwen and fallback_used and model_metrics.get("primary_generated", 0) == 0
         run_status = (
             "degraded"
